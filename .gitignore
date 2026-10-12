@@ -1,0 +1,9 @@
+# Редактор / ОС
+.DS_Store
+*.swp
+
+# Julia
+*.jl.cov
+*.jl.*.cov
+*.jl.mem
+
