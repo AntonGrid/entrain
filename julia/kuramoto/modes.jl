@@ -132,6 +132,96 @@ end
 advance_ratio!(m::Medium, seconds::Float64, strength::Float64, bandr::Float64) =
     advance_held!(m, seconds, strength, bandr, ratio_norm(size(m.omega, 2)), 0.0)
 
+"""
+    step_scale!(medium, dt, strength, link, eps)
+
+Связь мод по кратной фазе. Сравниваются не частоты и не отношения частот,
+а фаза, приведённая к масштабу моды: мода p отвечает на разность
+θ_q − (q/p)·θ_p. Эта разность не дрейфует ровно тогда, когда отношение
+ω_q/ω_p уже равно q/p: при других частотах она бежит, и отклик усредняется
+в ноль сам собой. Полосы здесь нет — она не нужна.
+
+`link[p, q]` — наведённая связь: при eps > 0 она тянется к усреднённому по
+времени cos той же разности, то есть к тому, держалось ли это отношение.
+"""
+function step_scale!(m::Medium, dt::Float64, strength::Float64,
+                     link::Matrix{Float64}, eps::Float64 = 0.0)
+    vibs, modes = size(m.omega)
+    drive = zeros(vibs, modes)
+    for i in 1:vibs, p in 1:modes
+        d = 0.0
+        for j in 1:vibs
+            j == i && continue
+            for n in 1:modes
+                s = overlap(m.omega[j, n] - m.omega[i, p], m.band)
+                d += m.coupling[i, j] * s * sin(m.theta[j, n] - m.theta[i, p])
+            end
+        end
+        drive[i, p] = d
+    end
+    for i in 1:vibs, p in 1:modes, q in 1:modes
+        q == p && continue
+        drive[i, p] += strength * link[p, q] *
+                       sin(m.theta[i, q] - (q / p) * m.theta[i, p])
+    end
+    if m.tuning != 0.0
+        for i in 1:vibs, p in 2:modes
+            drive[i, p] -= m.tuning * (m.omega[i, p] - p * m.omega[i, 1])
+        end
+    end
+    m.omega .+= dt .* (drive .- m.damping .* (m.omega .- m.omega0))
+    m.theta .+= dt .* m.omega
+    if m.memory != 0.0
+        for i in 1:vibs, j in 1:vibs
+            i == j && continue
+            acc, weight = 0.0, 0.0
+            for p in 1:modes, n in 1:modes
+                s = overlap(m.omega[j, n] - m.omega[i, p], m.band)
+                acc += s * cos(m.theta[i, p] - m.theta[j, n])
+                weight += s
+            end
+            target = weight == 0.0 ? m.coupling[i, j] : acc / weight
+            m.coupling[i, j] += dt * m.memory * (target - m.coupling[i, j])
+        end
+    end
+    if eps != 0.0
+        for p in 1:modes, q in 1:modes
+            q == p && continue
+            acc = 0.0
+            for i in 1:vibs
+                acc += cos(m.theta[i, q] - (q / p) * m.theta[i, p])
+            end
+            link[p, q] += dt * eps * (acc / vibs - link[p, q])
+        end
+    end
+    return m
+end
+
+"""
+    advance_scale!(medium, seconds, strength, link, eps = 0.0)
+
+Прожить средой указанное время по шагу со связью по кратной фазе.
+"""
+function advance_scale!(m::Medium, seconds::Float64, strength::Float64,
+                        link::Matrix{Float64}, eps::Float64 = 0.0)
+    for _ in 1:round(Int, seconds / DT)
+        step_scale!(m, DT, strength, link, eps)
+    end
+    return m
+end
+
+"Средняя наведённая связь по кратным парам (без диагонали)."
+function scale_link(link::Matrix{Float64})
+    modes = size(link, 1)
+    modes < 2 && return 0.0
+    acc = 0.0
+    for p in 1:modes, q in 1:modes
+        p == q && continue
+        acc += link[p, q]
+    end
+    return acc / (modes * (modes - 1))
+end
+
 "Средний отклик между разными модами одной вибрации: слышат ли они друг друга."
 function inner_overlap(m::Medium)
     modes = size(m.omega, 2)
@@ -144,7 +234,6 @@ function inner_overlap(m::Medium)
     end
     return acc / n
 end
-
 
 function main()
     @printf("взаимодействие мод: шесть начальных условий, наименьшее … наибольшее\n")
@@ -298,6 +387,44 @@ function main()
     println("   не от события, а от того, что событие оставило вибрацию другой.")
     println("   У русла между вибрациями всё иначе: там прошлое остаётся в самой")
     println("   связи, потому что согласованность фаз накапливается во времени.")
+
+    println("\n--- связь по кратной фазе: та, которой полоса не нужна " * "-"^3)
+    println("   мода p отвечает на θ_q − (q/p)·θ_p: эта разность бежит, если")
+    println("   отношение не выполняется, и стоит, если выполняется. λ = 0.")
+    for strength in (0.0, 2.0, 8.0)
+        held = [(begin
+            m = build(modes = 3, memory = 0.0, seed = s)
+            link = ones(3, 3)
+            advance_scale!(m, 60.0, strength, link)
+            (tuning_error(m, 1), unison(m, 1))
+        end) for s in SEEDS]
+        @printf("   связь %.1f   строй %.4f … %.4f   сжатие %.3f … %.3f\n",
+                strength, minimum(h[1] for h in held), maximum(h[1] for h in held),
+                minimum(h[2] for h in held), maximum(h[2] for h in held))
+    end
+    println("\n   толчок обертону 0.5, затем минута: что осталось в связи.")
+    for (strength, eps, link0) in ((8.0, 0.0, 1.0), (8.0, 1e-2, 1.0), (8.0, 1e-2, 0.1),
+                                   (2.0, 1e-2, 1.0), (2.0, 1e-1, 1.0))
+        seen = [(begin
+            m = build(modes = 3, memory = 0.0, seed = s)
+            link = fill(link0, 3, 3)
+            advance_scale!(m, 60.0, strength, link, eps)
+            perturb!(m, 1, 0.5, 2)
+            advance_scale!(m, 60.0, strength, link, eps)
+            (tuning_error(m, 1), scale_link(link), minimum(link))
+        end) for s in SEEDS]
+        @printf("   связь %.1f, память %.0e, начало %.1f   строй %.4f … %.4f   связь %.3f … %.3f   наименьшая %.3f … %.3f\n",
+                strength, eps, link0,
+                minimum(x[1] for x in seen), maximum(x[1] for x in seen),
+                minimum(x[2] for x in seen), maximum(x[2] for x in seen),
+                minimum(x[3] for x in seen), maximum(x[3] for x in seen))
+    end
+    println("   Без полосы, без λ и без выделенной моды: верхняя граница ошибки")
+    println("   падает в разы (3–6), но не так ровно, как у λ — на части начальных")
+    println("   условий аккорд не сжимается, а раздувается. Зато эта связь")
+    println("   единственная, которая наводится: с памятью она растёт к тому, что")
+    println("   держалось (начатая с 0.1 — в разы), а при сильной памяти уходит и в")
+    println("   минус: среда запоминает не только строй, но и его отсутствие.")
 
     return nothing
 end
