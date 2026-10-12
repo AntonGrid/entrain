@@ -1,12 +1,8 @@
 {
   "recommendations": [
-    "ms-python.python",
-    "ms-python.vscode-pylance",
-    "ms-python.debugpy",
-    "ms-toolsai.jupyter",
-    "charliermarsh.ruff",
-    "mechatroner.rainbow-csv",
+    "julialang.language-julia",
     "yzhang.markdown-all-in-one",
     "eamodio.gitlens"
   ]
 }
+
