@@ -53,7 +53,74 @@ end
 
 То, что слышно в точке, если слушать только часть среды.
 """
-listen_to(m::Medium, indices, t::Float64) = mean(cos.(m.omega[indices] .* t .+ m.theta[indices]))
+listen_to(m::Medium, indices, t::Float64) = mean(cos.(m.omega[indices, :] .* t .+ m.theta[indices, :]))
+
+"""
+    response(medium; seconds, shift, step)
+
+Отклик на одно и то же событие, в числах:
+`depth`     — насколько ушла частота сразу после толчка;
+`residual`  — где частота остаётся потом (среда стоит не на своей, а на своей в среде);
+`half_time` — за сколько секунд прошла половина пути (скорость отклика);
+`shape`     — насколько возврат отличается от простого затухания к остатку:
+              ноль означал бы ровно экспоненциальный возврат.
+
+Это измерение поведения, а не утверждение.
+"""
+function response(m::Medium; seconds::Float64 = 6.0, shift::Float64 = 1.5,
+                    step::Float64 = 0.05)
+    perturb!(m, 1, shift)
+    depth = drift(m, 1)
+    times, devs = Float64[], Float64[]
+    t = 0.0
+    while t < seconds - 1e-9
+        advance!(m, step)
+        t += step
+        push!(times, t)
+        push!(devs, drift(m, 1))
+    end
+    residual = devs[end]
+    k = findfirst(d -> d <= residual + (depth - residual) / 2, devs)
+    half_time = k === nothing ? NaN : times[k]
+    plain = residual .+ (depth - residual) .* exp.(-log(2) .* times ./ half_time)
+    shape = maximum(abs.(devs .- plain) ./ (depth - residual))
+    return (depth = depth, residual = residual, half_time = half_time, shape = shape)
+end
+
+"""
+    echo(medium, i = 5; shift, seconds)
+
+Насколько событие дошло до вибрации i: среда проживается дважды — с событием
+и без него, — и сравнивается одно и то же место. Толчок в одном месте
+отзывается в другом.
+"""
+function echo(m::Medium, i::Int = 5; shift::Float64 = 1.5, seconds::Float64 = 6.0)
+    quiet = deepcopy(m)
+    perturb!(m, 1, shift)
+    advance!(m, seconds)
+    advance!(quiet, seconds)
+    return abs(m.omega[i, 1] - quiet.omega[i, 1])
+end
+
+"""
+    pull(medium)
+
+Суммарная тяга среды самой себя:
+Σᵢⱼₚₙ Wᵢⱼ S(ωⱼₙ−ωᵢₚ) sin(θⱼₙ−θᵢₚ).
+При симметричной связи равна нулю: среда не может сдвинуть себя целиком.
+"""
+function pull(m::Medium)
+    total = 0.0
+    vibs, modes = size(m.omega)
+    for i in 1:vibs, j in 1:vibs
+        i == j && continue
+        for p in 1:modes, n in 1:modes
+            s = overlap(m.omega[j, n] - m.omega[i, p], m.band)
+            total += m.coupling[i, j] * s * sin(m.theta[j, n] - m.theta[i, p])
+        end
+    end
+    return total
+end
 
 """
     checks()
@@ -66,16 +133,20 @@ function checks()
     println("связь и состояние")
 
     m = build()
-    total = 0.0
-    for i in eachindex(m.theta), j in eachindex(m.theta)
-        total += m.coupling[i, j] * sin(m.theta[j] - m.theta[i])
-    end
-    push!(results, report_zeros("Σᵢⱼ Wᵢⱼ sin(θⱼ−θᵢ) = 0 при симметричной связи", abs(total), TOL_EXACT))
+    push!(results, report_zeros("Σᵢⱼ Wᵢⱼ sin(θⱼ−θᵢ) = 0 при симметричной связи", abs(pull(m)), TOL_EXACT))
+
+    m = build(modes = 3, band = 0.1)
+    push!(results, report_zeros("то же с аккордом и полосой (резонанс не выдумывает движение)", abs(pull(m)), TOL_EXACT))
 
     m = build(damping = 0.0)
     before = sum(m.omega)
     advance!(m, 20.0)
     push!(results, report_zeros("сумма частот сохраняется (γ = 0)", abs(sum(m.omega) - before), TOL_EXACT))
+
+    m = build(modes = 3, band = 0.1, damping = 0.0)
+    before = sum(m.omega)
+    advance!(m, 20.0)
+    push!(results, report_zeros("сумма частот всех мод сохраняется (γ = 0)", abs(sum(m.omega) - before), TOL_EXACT))
 
     println("\nсвободное движение и затухание")
 
@@ -126,16 +197,16 @@ function checks()
     println("\nсогласованность и наложение")
 
     m = build()
-    m.theta .= m.theta[1]
-    push!(results, report_zeros("все фазы равны ⟹ согласованность = 1", abs(coherence(m)[1] - 1.0), TOL_EXACT))
+    m.theta .= m.theta[1, 1]
+    push!(results, report_zeros("все фазы равны ⟹ согласованность = 1", abs(coherence(m) - 1.0), TOL_EXACT))
 
     m.theta .= 2π .* (0:(N - 1)) ./ N
-    push!(results, report_zeros("фазы разложены равномерно ⟹ согласованность = 0", coherence(m)[1], TOL_EXACT))
+    push!(results, report_zeros("фазы разложены равномерно ⟹ согласованность = 0", coherence(m), TOL_EXACT))
 
     m = build()
-    ρ = coherence(m)[1]
+    ρ = coherence(m)
     m.theta .+= 1.2345
-    push!(results, report_zeros("общий сдвиг фаз не меняет согласованность", abs(coherence(m)[1] - ρ), TOL_EXACT))
+    push!(results, report_zeros("общий сдвиг фаз не меняет согласованность", abs(coherence(m) - ρ), TOL_EXACT))
 
     m = build()
     part_a, part_b = [1, 2, 3], [4, 5, 6, 7, 8, 9, 10]
@@ -143,12 +214,82 @@ function checks()
     split = (length(part_a) * listen_to(m, part_a, 1.7) + length(part_b) * listen_to(m, part_b, 1.7)) / N
     push!(results, report_zeros("наложение: целое = взвешенная сумма частей", abs(whole - split), TOL_EXACT))
 
+    println("\nаккорд: несколько частот у одной вибрации")
+
+    m = build()
+    push!(results, report_zeros("при одной моде ширина аккорда = 0", spread(m, 1), TOL_EXACT))
+
+    m = build(modes = 3, band = 0.1)
+    push!(results, report_at_least("три моды — аккорд шириной больше частоты", spread(m, 1), 1.0))
+    advance!(m, 60.0)
+    push!(results, report_at_least("через минуту аккорд всё ещё аккорд (моды не слились)", spread(m, 1), 1.0))
+
+    Π = 0.1
+    overshoot = maximum(max(overlap(Δ, Π) - (Π / Δ)^2, 0.0) for Δ in 0.2:0.05:20.0)
+    push!(results, report_zeros("отклик падает не медленнее, чем (Π/Δ)²", overshoot, TOL_EXACT))
+
+    held = build(modes = 3, band = 0.1, tuning = 8.0)
+    loose = build(modes = 3, band = 0.1, tuning = 0.0)
+    advance!(held, 60.0)
+    advance!(loose, 60.0)
+    push!(
+        results,
+        report_at_least(
+            "строй держит обертоны там, где без него аккорд расстраивается",
+            tuning_error(loose, 1) / (tuning_error(held, 1) + 1e-12),
+            10.0,
+        ),
+    )
+
+    m = build(modes = 3, band = 0.1, memory = 1e-3, tuning = 8.0)
+    advance!(m, 60.0)
+    push!(results, report_zeros("память сохраняет связь симметричной",
+                                maximum(abs.(m.coupling .- m.coupling')), TOL_EXACT))
+
     return results
+end
+
+"""
+    behaviour()
+
+Числа поведения: что именно меняется в среде, которая прожила события.
+Здесь ничего не проверяется — это измерения, и они приводятся как есть.
+"""
+function behaviour()
+    println("\nчто меняется в поведении (числа, не утверждения)")
+
+    fresh = build(memory = 1e-3)
+    routed = build(memory = 1e-3)
+    for _ in 1:200
+        perturb!(routed, 1, 1.5)
+        advance!(routed, 6.0)
+    end
+    @printf("  связь[1,2]               нетронутая %.6f      с руслом %.6f\n",
+            fresh.coupling[1, 2], routed.coupling[1, 2])
+
+    a = response(fresh)
+    b = response(routed)
+    @printf("  глубина события          нетронутая %.4f        с руслом %.4f\n", a.depth, b.depth)
+    @printf("  остаток после возврата   нетронутая %.4f        с руслом %.4f\n", a.residual, b.residual)
+    @printf("  половина пути            нетронутая %.2f с       с руслом %.2f с\n", a.half_time, b.half_time)
+    @printf("  отличие от затухания     %.4f              %.4f   (0 — ровно затухание)\n",
+            a.shape, b.shape)
+
+    fresh = build(memory = 1e-3)
+    routed = build(memory = 1e-3)
+    for _ in 1:200
+        perturb!(routed, 1, 1.5)
+        advance!(routed, 6.0)
+    end
+    @printf("  отзвук в 5-й вибрации    нетронутая %.4f        с руслом %.4f\n",
+            echo(fresh), echo(routed))
+    return nothing
 end
 
 function main()
     println("Сходится ли описание\n")
     results = checks()
+    behaviour()
     println()
     if all(results)
         @printf("описание сходится: %d утверждений из %d\n", count(results), length(results))
