@@ -318,15 +318,23 @@ function behaviour()
                                 ("отзвук в 5-й вибрации", :echo, ""))
         fro = spread_of([getfield(r, field)[1] for r in rows])
         rou = spread_of([getfield(r, field)[2] for r in rows])
-        crossed = !(last(fro) < first(rou) || last(rou) < first(fro))
+        fro_lo, fro_hi = first(fro), last(fro)
+        rou_lo, rou_hi = first(rou), last(rou)
+        crossed = !(fro_hi < rou_lo || rou_hi < fro_lo)
         @printf("  %-23s нетронутая %.4f … %.4f   с руслом %.4f … %.4f%s\n",
-                name, first(fro), last(fro), first(rou), last(rou), unit)
+                name, fro_lo, fro_hi, rou_lo, rou_hi, unit)
+        spent, steadied = fro_hi - fro_lo, rou_hi - rou_lo
         @printf("  %-23s разброс %.4f против %.4f; диапазоны %s\n", "",
-                last(fro) - first(fro), last(rou) - first(rou),
-                crossed ? "перекрываются" : "не пересекаются")
+                spent, steadied, crossed ? "перекрываются" : "не пересекаются")
+        # Ширина отклика — то, что держится и по начальным условиям, и по версии:
+        # величина может совпасть, а воспроизводимость — нет.
+        steadied == 0.0 && println("  "^23 * "разброс отклика: стоит на месте (с руслом)")
+        steadied > 0.0 && @printf("  %-23s разброс отклика уже в %.0f раз (с руслом)\n", "",
+                                  spent / steadied)
     end
     println("  Перекрытие диапазонов значит, что различие сред не держится при")
     println("  смене начальных условий: такое число — бросок, а не свойство.")
+    println("  А ширина отклика держится: след — не остаток, а устойчивость.")
     return nothing
 end
 

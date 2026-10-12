@@ -7,19 +7,27 @@
 #
 #     состояние — частота; у одной вибрации их несколько: аккорд
 #     связь     — coupling: как одна вибрация тянет другую
+#     внутри    — inner: как моды тянут друг друга внутри вибрации; это та же
+#                 среда, только взятая близко: мода — вибрация меньшего масштаба
 #     резонанс  — отклик по совпадению частот: полоса Π широкая — связь
 #                 отзывается на многое, узкая — только на совпадающее
 #     строй     — жёсткость аккорда: держит обертоны в их отношении
 #     затухание — возвращение к своим частотам
-#     память    — деформация связи тем, что совпало (русло)
+#     память    — деформация связи тем, что совпало (русло) — и внутри тоже
 #
 #     θ̇ᵢₘ = ωᵢₘ + Σⱼₙ Wᵢⱼ S(ωⱼₙ − ωᵢₘ) sin(θⱼₙ − θᵢₘ)
-#     ω̇ᵢₘ = Σⱼₙ Wᵢⱼ S(ωⱼₙ − ωᵢₘ) sin(θⱼₙ − θᵢₘ) − λ (ωᵢₘ − m ωᵢ₁) − γ (ωᵢₘ − ω₀ᵢₘ)
+#                 + Σ_q Uₘq S(ωᵢ_q − ωᵢₘ) sin(θᵢ_q − θᵢₘ)
+#     ω̇ᵢₘ = Σⱼₙ Wᵢⱼ S(ωⱼₙ − ωᵢₘ) sin(θⱼₙ − θᵢₘ)
+#                 + Σ_q Uₘq S(ωᵢ_q − ωᵢₘ) sin(θᵢ_q − θᵢₘ)
+#                 − λ (ωᵢₘ − m ωᵢ₁) − γ (ωᵢₘ − ω₀ᵢₘ)
 #     Ẇᵢⱼ = ε ( Σₚₙ S cos(θᵢₚ − θⱼₙ) / Σₚₙ S − Wᵢⱼ )
+#     U̇ₘq = εᵤ ( Σᵢ S cos(θᵢₘ − θᵢ_q) / Σᵢ S − Uₘq )
 #     S(Δ) = 1 / (1 + (Δ/Π)²)
 #
 # При одной моде на вибрацию и Π = ∞ это в точности прежние уравнения:
 # у вибрации была одна частота, отклик не зависел от совпадения.
+# Внутренняя связь U видна, только когда мод больше одной; при U = 0
+# прежнее чтение не меняется ни на число.
 #
 # Запуск:
 #
@@ -42,10 +50,13 @@ const DT = 0.01     # шаг описания, с
 - `omega`    — частоты сейчас: это и есть состояние;
 - `theta`    — фазы;
 - `coupling` — связь между вибрациями: `coupling[i, j]` — насколько j тянет i;
+- `inner`    — связь внутри вибрации: `inner[p, q]` — насколько мода q тянет
+              моду p в той же вибрации; та же среда, взятая близко;
 - `band`     — полоса отклика Π: чем уже, тем строже резонанс;
 - `tuning`   — λ: строй, жёсткость аккорда: держит обертоны в их отношении
               к основной частоте (`ωᵢₘ → m · ωᵢ₁`); при λ = 0 аккорд не держится;
 - `memory`   — ε: как быстро связь деформируется тем, что через неё прошло;
+- `inner_memory` — εᵤ: то же для связи внутри вибрации;
 - `damping`  — γ: как быстро частоты возвращаются к своим.
 """
 mutable struct Medium
@@ -53,9 +64,11 @@ mutable struct Medium
     omega::Matrix{Float64}
     theta::Matrix{Float64}
     coupling::Matrix{Float64}
+    inner::Matrix{Float64}
     band::Float64
     tuning::Float64
     memory::Float64
+    inner_memory::Float64
     damping::Float64
 end
 
@@ -73,7 +86,9 @@ overlap(Δω::Float64, band::Float64) = 1 / (1 + (Δω / band)^2)
     step!(medium, dt)
 
 Один шаг описания: связь двигает частоты, затухание возвращает их к своим,
-прошедшее деформирует связь.
+прошедшее деформирует связь. Внутри вибрации — тот же закон на меньшем
+масштабе: моды тянут друг друга, и то, что через них прошло, оставляет
+след там же.
 """
 function step!(m::Medium, dt::Float64)
     vibs, modes = size(m.omega)
@@ -88,6 +103,13 @@ function step!(m::Medium, dt::Float64)
             end
         end
         drive[i, p] = d
+    end
+    if !all(iszero, m.inner)
+        for i in 1:vibs, p in 1:modes, q in 1:modes
+            q == p && continue
+            s = overlap(m.omega[i, q] - m.omega[i, p], m.band)
+            drive[i, p] += m.inner[p, q] * s * sin(m.theta[i, q] - m.theta[i, p])
+        end
     end
     if m.tuning != 0.0
         for i in 1:vibs, p in 2:modes
@@ -107,6 +129,22 @@ function step!(m::Medium, dt::Float64)
             end
             target = weight == 0.0 ? m.coupling[i, j] : acc / weight
             m.coupling[i, j] += dt * m.memory * (target - m.coupling[i, j])
+        end
+    end
+    if !all(iszero, m.inner) && m.inner_memory != 0.0
+        # След внутри вибрации: одна связь на все вибрации, поэтому она
+        # наводится тем, что совпало у них у всех сразу.
+        for p in 1:modes, q in 1:modes
+            q == p && continue
+            acc, weight = 0.0, 0.0
+            for i in 1:vibs
+                s = overlap(m.omega[i, q] - m.omega[i, p], m.band)
+                acc += s * cos(m.theta[i, p] - m.theta[i, q])
+                weight += s
+            end
+            weight == 0.0 && continue
+            target = acc / weight
+            m.inner[p, q] += dt * m.inner_memory * (target - m.inner[p, q])
         end
     end
     return m
@@ -160,6 +198,36 @@ resonance(m::Medium) = maximum(m.omega) - minimum(m.omega)
 spread(m::Medium, i::Int) = maximum(m.omega[i, :]) - minimum(m.omega[i, :])
 
 """
+    unison(medium, i)
+
+Насколько аккорд i-й вибрации сжался: ноль — ширина та же, что была,
+единица — все моды сошлись в одну частоту. Видно, гасит ли внутренняя
+связь различие между модами.
+"""
+function unison(m::Medium, i::Int)
+    was = maximum(m.omega0[i, :]) - minimum(m.omega0[i, :])
+    was == 0.0 && return 0.0
+    return 1 - spread(m, i) / was
+end
+
+"""
+    inner_link(medium)
+
+Средняя связь мод внутри вибрации — по парам, без диагонали. То, что
+навела внутренняя среда.
+"""
+function inner_link(m::Medium)
+    modes = size(m.inner, 1)
+    modes < 2 && return 0.0
+    acc = 0.0
+    for p in 1:modes, q in 1:modes
+        p == q && continue
+        acc += m.inner[p, q]
+    end
+    return acc / (modes * (modes - 1))
+end
+
+"""
     tuning_error(medium, i)
 
 Насколько строй i-й вибрации сошёл: отношение обертонов к основной частоте.
@@ -191,16 +259,23 @@ drift(m::Medium, i::Int, p::Int = 1) = abs(m.omega[i, p] - m.omega0[i, p])
 
 """
     build(; modes = 1, link = 0.6, band = Inf, tuning = 0.0,
-            memory = 1e-3, damping = 0.8, seed = 4)
+            memory = 1e-3, inner = 0.0, inner_memory = 0.0,
+            inner_matrix = nothing, damping = 0.8, seed = 4)
 
 Построить среду: N вибраций, у каждой modes частот.
 
 При `modes = 1` и `band = Inf` это прежнее описание: одна частота на вибрацию,
 отклик без различия совпадений. Аккорд, полоса и строй — тот же самый язык,
 просто теперь в нём есть то, что слово называло аккордом.
+
+`inner` — связь мод внутри вибрации: то же, что `link`, но на меньшем
+масштабе. Своя матрица (`inner_matrix`) задаётся, когда связь внутри должна
+зависеть от того, какие это моды, а не только от того, насколько они совпали.
 """
 function build(; modes::Int = 1, link::Float64 = 0.6, band::Float64 = Inf,
                  tuning::Float64 = 0.0, memory::Float64 = 1e-3,
+                 inner::Float64 = 0.0, inner_memory::Float64 = 0.0,
+                 inner_matrix::Union{Nothing,Matrix{Float64}} = nothing,
                  damping::Float64 = 0.8, seed::Int = 4)
     modes >= 1 || throw(ArgumentError("у вибрации хотя бы одна частота"))
     rng = MersenneTwister(seed)
@@ -213,8 +288,12 @@ function build(; modes::Int = 1, link::Float64 = 0.6, band::Float64 = Inf,
         end
     end
     theta = 2π .* rand(rng, N, modes)
-    return Medium(omega0, copy(omega0), theta, fill(link / N, N, N),
-                  band, tuning, memory, damping)
+    U = inner_matrix === nothing ? fill(inner, modes, modes) : copy(inner_matrix)
+    for p in 1:modes
+        U[p, p] = 0.0                              # мода не тянет саму себя
+    end
+    return Medium(omega0, copy(omega0), theta, fill(link / N, N, N), U,
+                  band, tuning, memory, inner_memory, damping)
 end
 
 """
@@ -245,7 +324,68 @@ function show(m::Medium, label::AbstractString)
     return nothing
 end
 
+"""
+    report_range(name, values, unit = "")
+
+Наименьшее … наибольшее из ряда чтений при разных начальных условиях.
+Одно число — это один бросок; ряд показывает, где свойство, а где случай.
+"""
+function report_range(name::AbstractString, values, unit::AbstractString = "")
+    @printf("   %-34s %8.4f … %-8.4f%s\n", name, minimum(values), maximum(values), unit)
+    return nothing
+end
+
 # --- чтение ---------------------------------------------------------------
+
+"""
+    ranges()
+
+То же чтение, но не одним броском: при шести начальных условиях сразу.
+Отдельное число в среде зависит от того, с чего начали; размах — много меньше.
+Так видно, что здесь свойство описания, а что — бросок генератора.
+"""
+function ranges()
+    seeds = 1:6
+    println("\n--- то же чтение при шести начальных условиях: наименьшее … наибольшее " * "-"^3)
+
+    wake = [(begin
+        m = build(seed = s)
+        before = (coherence(m), resonance(m))
+        advance!(m, 60.0)
+        (before..., coherence(m), resonance(m))
+    end) for s in seeds]
+    report_range("согласованность сразу", [w[1] for w in wake])
+    report_range("разброс частот сразу", [w[2] for w in wake])
+    report_range("согласованность через минуту", [w[3] for w in wake])
+    report_range("разброс частот через минуту", [w[4] for w in wake])
+
+    ping = [(begin
+        m = build(seed = s)
+        advance!(m, 60.0)
+        perturb!(m, 1, 1.5)
+        a = drift(m, 1)
+        advance!(m, 6.0)
+        (a, drift(m, 1))
+    end) for s in seeds]
+    report_range("отклонение после толчка", [p[1] for p in ping])
+    report_range("отклонение через шесть секунд", [p[2] for p in ping])
+
+    held = [(begin
+        a = build(modes = 3, band = 0.1, tuning = 8.0, seed = s)
+        b = build(modes = 3, band = 0.1, tuning = 0.0, seed = s)
+        advance!(a, 60.0)
+        advance!(b, 60.0)
+        (tuning_error(a, 1), tuning_error(b, 1), coherence(a), partial_coherence(a, 1))
+    end) for s in seeds]
+    report_range("обертоны: со строем", [h[1] for h in held])
+    report_range("обертоны: без строя", [h[2] for h in held])
+    report_range("во сколько раз без строя хуже", [h[2] / h[1] for h in held])
+    report_range("целое при узкой полосе", [h[3] for h in held])
+    report_range("по совпадению с первой модой", [h[4] for h in held])
+    println("   Свойство здесь не «во сколько раз», а «всегда больше»: разброс —")
+    println("   это ширина, а не утверждение.")
+    return nothing
+end
 
 """
     main()
@@ -255,6 +395,8 @@ end
 1. Одна нота у каждой вибрации: среда сходится, наложение, толчок, память.
 2. Аккорд: у вибрации три частоты; строй держит их в отношении,
    узкая полоса собирает среду не в одно целое, а по совпадениям частот.
+3. Разброс: то же чтение при шести начальных условиях — где свойство,
+   а где бросок генератора.
 """
 function main()
     @printf("десять вибраций, шаг описания %.2f с\n\n", DT)
@@ -324,6 +466,8 @@ function main()
     show(c, "широкая связь")
     @printf("   строй первой вибрации          %.4f\n", tuning_error(c, 1))
     println("   полоса решает, что с чем сходится: узкая различает, широкая — нет.")
+
+    ranges()
     return nothing
 end
 
