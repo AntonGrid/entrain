@@ -6,9 +6,11 @@
 # Выбор уже сделан, и он не в числах: мода — не отдельная сущность, а вибрация
 # меньшего масштаба. Значит внутри вибрации должна работать та же среда, и
 # спрашивать надо не «как связать моды», а «что из этого следует». Ниже —
-# три чтения подряд: та же среда на меньшем масштабе, та же среда с узкой
-# полосой, и отклик по совпадению отношения. Третье — единственное, чего нет
-# в basic.jl: это не описание, а проба, и в ней меняется ровно одна вещь.
+# чтения подряд: та же среда на меньшем масштабе, та же среда с узкой полосой,
+# отклик по совпадению отношения, связь по кратной фазе и, наконец, уровни
+# моды — шкала обертонов, которой можно слышать чужую моду. Последнее — не
+# описание, а проба, и в нём меняется ровно одна вещь: задано, что шкала есть,
+# и не задано никакого отношения. Вопрос там один: соберётся ли строй сам.
 #
 # Запуск:
 #
@@ -222,6 +224,198 @@ function scale_link(link::Matrix{Float64})
     return acc / (modes * (modes - 1))
 end
 
+
+# --- возникает ли строй сам ------------------------------------------------
+
+"""
+    level_weights(K)
+
+Уровни моды: k = 1…K — её собственные обертоны, её собственная шкала. Мода
+отвечает уровню тем сильнее, чем ниже уровень: вес 1/(k·j).
+
+Здесь не задано никакого отношения. Задано только то, что уровни есть, — а
+это и есть «мода есть вибрация меньшего масштаба»: у вибрации есть моды, у
+моды есть уровни.
+"""
+level_weights(K::Int) = [1.0 / (k * j) for k in 1:K, j in 1:K]
+
+"""
+    scatter!(medium, low, high, seed = 7)
+
+Разбросать свои частоты мод по всему диапазону: каждая мода получает свою
+частоту, ни к какой другой не кратную. Аккорда в среде не строят — отношения
+в ней случайны. Так у строя нет возможности «уже быть»: его можно только
+навести.
+"""
+function scatter!(m::Medium, low::Float64, high::Float64, seed::Int = 7)
+    rng = MersenneTwister(seed)
+    for i in 1:size(m.omega, 1), p in 1:size(m.omega, 2)
+        m.omega0[i, p] = low + (high - low) * rand(rng)
+    end
+    m.omega .= m.omega0
+    return m
+end
+
+"""
+    level_error(medium, i, p, q, K)
+
+Насколько хорошо отношение двух мод ложится на уровень: наименьшее из
+|k·ω_p − j·ω_q| / (k·ω_p) по всем k, j ≤ K. Ноль — отношение выполняется
+ровно, и пара (k, j) говорит, какое именно: ω_p / ω_q = j / k.
+"""
+function level_error(m::Medium, i::Int, p::Int, q::Int, K::Int)
+    best, bi, bj = Inf, 1, 1
+    for k in 1:K, j in 1:K
+        e = abs(k * m.omega[i, p] - j * m.omega[i, q]) / (k * m.omega[i, p])
+        if e < best
+            best, bi, bj = e, k, j
+        end
+    end
+    return best, bi, bj
+end
+
+"""
+    step_levels!(medium, dt, strength, C, link, eps)
+
+Шаг описания, в котором мода слышит другую своими уровнями: уровень k моды p
+и уровень j моды q.
+
+Отбор делает ближайший уровень. Мода пробует все свои уровни против всех
+чужих, и работает тот, до которого близко: отклик S(k·ω_p − j·ω_q, Π) для
+далёкого мал. Пока уровень близок, он тянет частоту моды к тому, что этот
+уровень означает: ω_p → (j / k)·ω_q. Полосы по отношению здесь нет: Π — это
+отклик уровня, и она же решает, сколько отношений вообще доступно.
+
+Никакого отношения не задано — заданы только уровни. Какое отношение
+получится, решает среда.
+
+`link[k, j]` — наведённый вес уровня: при eps > 0 он тянется к усреднённому
+cos той же разности, то есть к тому, держалось ли это отношение.
+"""
+function step_levels!(m::Medium, dt::Float64, strength::Float64,
+                      C::Matrix{Float64}, link::Matrix{Float64},
+                      eps::Float64 = 0.0)
+    vibs, modes = size(m.omega)
+    K = size(C, 1)
+    drive = zeros(vibs, modes)
+    for i in 1:vibs, p in 1:modes
+        d = 0.0
+        for j in 1:vibs
+            j == i && continue
+            for n in 1:modes
+                s = overlap(m.omega[j, n] - m.omega[i, p], m.band)
+                d += m.coupling[i, j] * s * sin(m.theta[j, n] - m.theta[i, p])
+            end
+        end
+        drive[i, p] = d
+    end
+    for i in 1:vibs, p in 1:modes, q in 1:modes
+        q == p && continue
+        for k in 1:K, j in 1:K
+            weight = strength * C[k, j] * link[k, j]
+            weight == 0.0 && continue
+            near = overlap(k * m.omega[i, p] - j * m.omega[i, q], m.band)
+            drive[i, p] += weight * near * (j * m.omega[i, q] / k - m.omega[i, p])
+        end
+    end
+    if m.tuning != 0.0
+        for i in 1:vibs, p in 2:modes
+            drive[i, p] -= m.tuning * (m.omega[i, p] - p * m.omega[i, 1])
+        end
+    end
+    m.omega .+= dt .* (drive .- m.damping .* (m.omega .- m.omega0))
+    m.theta .+= dt .* m.omega
+    if m.memory != 0.0
+        for i in 1:vibs, j in 1:vibs
+            i == j && continue
+            acc, weight = 0.0, 0.0
+            for p in 1:modes, n in 1:modes
+                s = overlap(m.omega[j, n] - m.omega[i, p], m.band)
+                acc += s * cos(m.theta[i, p] - m.theta[j, n])
+                weight += s
+            end
+            target = weight == 0.0 ? m.coupling[i, j] : acc / weight
+            m.coupling[i, j] += dt * m.memory * (target - m.coupling[i, j])
+        end
+    end
+    if eps != 0.0
+        for k in 1:K, j in 1:K
+            acc, n = 0.0, 0
+            for i in 1:vibs, p in 1:modes, q in 1:modes
+                q == p && continue
+                acc += cos(k * m.theta[i, p] - j * m.theta[i, q])
+                n += 1
+            end
+            n == 0 && continue
+            link[k, j] += dt * eps * (acc / n - link[k, j])
+        end
+    end
+    return m
+end
+
+"""
+    advance_levels!(medium, seconds, strength, C, link, eps = 0.0)
+
+Прожить средой указанное время по шагу со связью через уровни мод.
+"""
+function advance_levels!(m::Medium, seconds::Float64, strength::Float64,
+                         C::Matrix{Float64}, link::Matrix{Float64},
+                         eps::Float64 = 0.0)
+    for _ in 1:round(Int, seconds / DT)
+        step_levels!(m, DT, strength, C, link, eps)
+    end
+    return m
+end
+
+"""
+    found_ratios(medium, K, tol)
+
+Что среда нашла сама: по каждой паре мод — уровень (k, j), выполненный с
+точностью лучше tol. Уровень (1, 1) означает, что две моды просто слились:
+это не аккорд, а совпадение.
+"""
+function found_ratios(m::Medium, K::Int, tol::Float64)
+    counts = Dict{Tuple{Int, Int}, Int}()
+    pairs, close = 0, 0
+    for i in 1:size(m.omega, 1), p in 1:size(m.omega, 2), q in (p + 1):size(m.omega, 2)
+        pairs += 1
+        e, bi, bj = level_error(m, i, p, q, K)
+        if e < tol
+            close += 1
+            counts[(bi, bj)] = get(counts, (bi, bj), 0) + 1
+        end
+    end
+    return close, pairs, counts
+end
+
+"Счёт уровней в строку: пара (k, j) значит ω_p / ω_q = j / k."
+function found_line(counts::Dict{Tuple{Int, Int}, Int})
+    isempty(counts) && return "ничего"
+    items = sort(collect(counts), by = x -> (-x[2], x[1]))
+    return join([@sprintf("%d:%d ×%d", j, k, n) for ((k, j), n) in items], "  ")
+end
+
+"""
+    found_inside(medium, K, tol)
+
+То же, но только пары мод одной вибрации: что среда сделала с аккордом, не
+глядя на другие вибрации.
+"""
+function found_inside(m::Medium, K::Int, tol::Float64)
+    counts = Dict{Tuple{Int, Int}, Int}()
+    pairs, close = 0, 0
+    for i in 1:size(m.omega, 1), p in 1:size(m.omega, 2), q in (p + 1):size(m.omega, 2)
+        pairs += 1
+        e, bi, bj = level_error(m, i, p, q, K)
+        if e < tol
+            close += 1
+            counts[(bi, bj)] = get(counts, (bi, bj), 0) + 1
+        end
+    end
+    return close, pairs, counts
+end
+
+
 "Средний отклик между разными модами одной вибрации: слышат ли они друг друга."
 function inner_overlap(m::Medium)
     modes = size(m.omega, 2)
@@ -234,6 +428,35 @@ function inner_overlap(m::Medium)
     end
     return acc / n
 end
+
+"Наибольшие наведённые уровни: где осел след. (k, j) — это уровни, не отношение."
+function link_top(link::Matrix{Float64}, n::Int)
+    K = size(link, 1)
+    items = [(link[k, j], k, j) for k in 1:K for j in 1:K]
+    sort!(items, by = x -> -abs(x[1]))
+    return join([@sprintf("(%d,%d) %.2f", k, j, v) for (v, k, j) in items[1:n]], "  ")
+end
+
+"Насколько сломан аккорд у одной вибрации: худшая пара, в долях."
+function chord_error(m::Medium, i::Int)
+    modes = size(m.omega, 2)
+    worst = 0.0
+    for p in 1:modes, q in (p + 1):modes
+        worst = max(worst, abs(m.omega[i, p] / m.omega[i, q] * q / p - 1))
+    end
+    return worst
+end
+
+"Расстроить аккорды: обертоны сбиты со своих мест."
+function detune!(m::Medium, spread::Float64, seed::Int)
+    rng = MersenneTwister(seed)
+    for i in 1:size(m.omega, 1), p in 2:size(m.omega, 2)
+        m.omega0[i, p] *= 1 + spread * randn(rng)
+    end
+    m.omega .= m.omega0
+    return m
+end
+
 
 function main()
     @printf("взаимодействие мод: шесть начальных условий, наименьшее … наибольшее\n")
@@ -425,6 +648,108 @@ function main()
     println("   единственная, которая наводится: с памятью она растёт к тому, что")
     println("   держалось (начатая с 0.1 — в разы), а при сильной памяти уходит и в")
     println("   минус: среда запоминает не только строй, но и его отсутствие.")
+
+    println("\n--- строй сам: заданы только уровни, отношения не задано " * "-"^4)
+    println("   у каждой моды свои обертоны 1…K — её шкала. Мода слышит другую")
+    println("   через ближайший свой уровень и тянет частоту к тому, что этот")
+    println("   уровень означает. Отношения здесь нет: задано только то, что шкала")
+    println("   есть. Аккорды сбиты со своих мест на 8%.")
+    K = 4
+    C = level_weights(K)
+    detuned = [(begin
+        m = build(modes = 3, link = 0.0, memory = 0.0, band = 0.05, seed = s)
+        detune!(m, 0.08, 900 + s)
+        close, pairs, _ = found_inside(m, K, 0.02)
+        (close, pairs, minimum(chord_error(m, i) for i in 1:N),
+         maximum(chord_error(m, i) for i in 1:N))
+    end) for s in SEEDS]
+    @printf("   сбито: нашлось %2d из %2d   худшая пара %.4f … %.4f\n",
+            sum(d[1] for d in detuned), sum(d[2] for d in detuned),
+            minimum(d[3] for d in detuned), maximum(d[4] for d in detuned))
+    for strength in (1.0, 4.0, 8.0, 16.0)
+        res = [(begin
+            m = build(modes = 3, link = 0.0, memory = 0.0, band = 0.05, seed = s)
+            detune!(m, 0.08, 900 + s)
+            link = ones(K, K)
+            advance_levels!(m, 60.0, strength, C, link)
+            close, pairs, counts = found_inside(m, K, 0.02)
+            (close, pairs, counts, mean(unison(m, i) for i in 1:N))
+        end) for s in SEEDS]
+        total = Dict{Tuple{Int, Int}, Int}()
+        for r in res, (key, n) in r[3]
+            total[key] = get(total, key, 0) + n
+        end
+        @printf("   связь %4.1f   нашлось %2d из %2d   сжатие %.3f … %.3f   %s\n",
+                strength, sum(r[1] for r in res), sum(r[2] for r in res),
+                minimum(r[4] for r in res), maximum(r[4] for r in res),
+                found_line(total))
+    end
+    println("   Первая строка — без связи: сбитые аккорды остаются сбитыми, и")
+    println("   найденное там — случайные совпадения (уровней много, попасть легко).")
+    println("   Дальше видно: отношения приходят к целым — 2:1, 3:1, 3:2, — тем")
+    println("   самым, которых никто не прописывал, и приходят не в слияние:")
+    println("   сжатие держится около нуля.")
+
+    println("\n   нужна ли для этого шкала: та же связь, разное число уровней.")
+    for kk in (1, 2, 3, 4)
+        res = [(begin
+            m = build(modes = 3, link = 0.0, memory = 0.0, band = 0.05, seed = s)
+            detune!(m, 0.08, 900 + s)
+            link = ones(kk, kk)
+            advance_levels!(m, 60.0, 8.0, level_weights(kk), link)
+            found_inside(m, kk, 0.02)[1]
+        end) for s in SEEDS]
+        @printf("   уровней %d   нашлось %2d из %2d\n", kk, sum(res), 3 * N * length(SEEDS))
+    end
+    println("   С одним уровнем связи хватает только на совпадение: аккорд не")
+    println("   собирается. С трёх — собирается. Строю нужна шкала, а не связь")
+    println("   вообще: целое берётся не из силы, а из того, что есть чем отвечать.")
+
+    println("\n   толчок обертону 0.3, затем минута: возвращается ли собранное.")
+    for (strength, eps) in ((16.0, 0.0), (16.0, 1e-2), (4.0, 1e-2))
+        res = [(begin
+            m = build(modes = 3, link = 0.0, memory = 0.0, band = 0.05, seed = s)
+            detune!(m, 0.08, 900 + s)
+            link = ones(K, K)
+            advance_levels!(m, 60.0, strength, C, link, eps)
+            was = found_inside(m, K, 0.02)[1]
+            perturb!(m, 1, 0.3, 2)
+            advance_levels!(m, 60.0, strength, C, link, eps)
+            (was, found_inside(m, K, 0.02)[1], link_top(link, 3))
+        end) for s in SEEDS]
+        @printf("   связь %4.1f, память %.0e   нашлось до толчка %2d … %2d, после %2d … %2d\n",
+                strength, eps, minimum(r[1] for r in res), maximum(r[1] for r in res),
+                minimum(r[2] for r in res), maximum(r[2] for r in res))
+        @printf("%40s след: %s\n", "",
+                eps == 0.0 ? "не наводится: память выключена" : res[1][3])
+    end
+    println("   Без памяти собранное возвращается ровно, а с памятью — хуже: в")
+    println("   наведённый вес входит не только то, что стояло, но и то, что нет,")
+    println("   поэтому он слабее заданного. Садится след на те же уровни, которыми")
+    println("   аккорд и держался: (2,4) — это то же 1:2, взятое вдвое. Среда")
+    println("   закрепляет не событие, а то, что сходилось.")
+
+    println("\n   а если частоты не кратны ни к чему: 0.6 … 1.8, аккорда не строят.")
+    for strength in (1.0, 8.0)
+        res = [(begin
+            m = build(modes = 3, link = 0.0, memory = 0.0, band = 0.05, seed = s)
+            scatter!(m, 0.6, 1.8, 700 + s)
+            link = ones(K, K)
+            advance_levels!(m, 60.0, strength, C, link)
+            close, pairs, counts = found_ratios(m, K, 0.02)
+            (close, pairs, counts)
+        end) for s in SEEDS]
+        total = Dict{Tuple{Int, Int}, Int}()
+        for r in res, (key, n) in r[3]
+            total[key] = get(total, key, 0) + n
+        end
+        @printf("   связь %4.1f   нашлось %3d из %3d   %s\n",
+                strength, sum(r[1] for r in res), sum(r[2] for r in res),
+                found_line(total))
+    end
+    println("   Среда находит и здесь — но в основном совпадение: отношение 1:1")
+    println("   доступно всегда, а до 3:2 надо ещё дожить. Строй возникает из того,")
+    println("   что шкала допускает и что оказалось близко.")
 
     return nothing
 end
