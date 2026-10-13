@@ -12,6 +12,10 @@
 # описание, а проба, и в нём меняется ровно одна вещь: задано, что шкала есть,
 # и не задано никакого отношения. Вопрос там один: соберётся ли строй сам.
 #
+# За ним второй вопрос, из того же строя: может ли собранное держаться следом.
+# Память записывается двумя способами — угол кратной фазы и сама работа уровня;
+# разница между ними и есть ответ.
+#
 # Запуск:
 #
 #     julia julia/kuramoto/modes.jl
@@ -368,6 +372,82 @@ function advance_levels!(m::Medium, seconds::Float64, strength::Float64,
 end
 
 """
+    step_trace!(medium, dt, strength, C, link, eps, work)
+
+То же, что `step_levels!`, но запись следа вынесена наружу вопросом: что
+именно помнится. `work = false` — след о фазе (`cos(k·θ_p − j·θ_q)`), как
+раньше: помнит угол кратной фазы. `work = true` — след о работе уровня
+(`S(k·ω_p − j·ω_q)`): помнит, что уровень был близок, то есть что связь
+через него шла.
+
+Разница не в величине, а в знаке: фазовый след у разных вибраций разного
+знака и при усреднении гасится; след о работе неотрицателен и копится там,
+где уровень стоял.
+"""
+function step_trace!(m::Medium, dt::Float64, strength::Float64,
+                     C::Matrix{Float64}, link::Matrix{Float64},
+                     eps::Float64, work::Bool)
+    vibs, modes = size(m.omega)
+    K = size(C, 1)
+    drive = zeros(vibs, modes)
+    for i in 1:vibs, p in 1:modes, q in 1:modes
+        q == p && continue
+        for k in 1:K, j in 1:K
+            w = strength * C[k, j] * link[k, j]
+            w == 0.0 && continue
+            s = overlap(k * m.omega[i, p] - j * m.omega[i, q], m.band)
+            drive[i, p] += w * s * (j * m.omega[i, q] / k - m.omega[i, p])
+        end
+    end
+    m.omega .+= dt .* (drive .- m.damping .* (m.omega .- m.omega0))
+    m.theta .+= dt .* m.omega
+    if eps != 0.0
+        for k in 1:K, j in 1:K
+            acc, n = 0.0, 0
+            for i in 1:vibs, p in 1:modes, q in 1:modes
+                q == p && continue
+                acc += work ? overlap(k * m.omega[i, p] - j * m.omega[i, q], m.band) :
+                              cos(k * m.theta[i, p] - j * m.theta[i, q])
+                n += 1
+            end
+            n == 0 && continue
+            link[k, j] += dt * eps * (acc / n - link[k, j])
+        end
+    end
+    return m
+end
+
+"""
+    advance_trace!(medium, seconds, strength, C, link, eps = 0.0, work = true)
+
+Прожить средой указанное время по шагу, где запись следа выбрана вопросом.
+"""
+function advance_trace!(m::Medium, seconds::Float64, strength::Float64,
+                        C::Matrix{Float64}, link::Matrix{Float64},
+                        eps::Float64 = 0.0, work::Bool = true)
+    for _ in 1:round(Int, seconds / DT)
+        step_trace!(m, DT, strength, C, link, eps, work)
+    end
+    return m
+end
+
+"""
+    level_bias(K, level, bias)
+
+Та же шкала, но одному уровню отдан больший вес: среда с такой шкалой
+собирает не то, что собирают все, — на нём и видно, несёт ли след выбор.
+"""
+function level_bias(K::Int, level::Tuple{Int, Int}, bias::Float64)
+    C = level_weights(K)
+    for k in 1:K, j in 1:K
+        if (k, j) == level || (j, k) == level
+            C[k, j] *= bias
+        end
+    end
+    return C
+end
+
+"""
     found_ratios(medium, K, tol)
 
 Что среда нашла сама: по каждой паре мод — уровень (k, j), выполненный с
@@ -705,6 +785,28 @@ function main()
     println("   собирается. С трёх — собирается. Строю нужна шкала, а не связь")
     println("   вообще: целое берётся не из силы, а из того, что есть чем отвечать.")
 
+    println("\n   а важно ли, что веса уровней разные: та же связь, вес ровный.")
+    odd = [(begin
+        m = build(modes = 3, link = 0.0, memory = 0.0, band = 0.05, seed = s)
+        detune!(m, 0.08, 900 + s)
+        advance_levels!(m, 60.0, 8.0, level_weights(4), ones(4, 4))
+        (found_inside(m, 4, 0.02)[1], mean(unison(m, i) for i in 1:N))
+    end) for s in SEEDS]
+    even = [(begin
+        m = build(modes = 3, link = 0.0, memory = 0.0, band = 0.05, seed = s)
+        detune!(m, 0.08, 900 + s)
+        advance_levels!(m, 60.0, 8.0, ones(4, 4), ones(4, 4))
+        (found_inside(m, 4, 0.02)[1], mean(unison(m, i) for i in 1:N))
+    end) for s in SEEDS]
+    @printf("   вес 1/(k·j)   нашлось %2d из %2d   сжатие %.3f … %.3f\n",
+            sum(o[1] for o in odd), 3 * N * length(SEEDS),
+            minimum(o[2] for o in odd), maximum(o[2] for o in odd))
+    @printf("   вес ровный    нашлось %2d из %2d   сжатие %.3f … %.3f\n",
+            sum(e[1] for e in even), 3 * N * length(SEEDS),
+            minimum(e[2] for e in even), maximum(e[2] for e in even))
+    println("   Ровный вес собирает не меньше и сжимает не сильнее: иерархия весов не")
+    println("   нужна, довольно самих уровней. Шкала — это разрешение, а не порядок.")
+
     println("\n   толчок обертону 0.3, затем минута: возвращается ли собранное.")
     for (strength, eps) in ((16.0, 0.0), (16.0, 1e-2), (4.0, 1e-2))
         res = [(begin
@@ -750,6 +852,105 @@ function main()
     println("   Среда находит и здесь — но в основном совпадение: отношение 1:1")
     println("   доступно всегда, а до 3:2 надо ещё дожить. Строй возникает из того,")
     println("   что шкала допускает и что оказалось близко.")
+
+    println("\n--- носитель: может ли след держать строй " * "-"^14)
+    println("   собрать аккорд, дать среде навести след, затем ослабить силу и")
+    println("   спросить, что осталось. Следа две записи: помнить угол кратной фазы")
+    println("   (как выше) или помнить саму работу уровня. Память 0.5, сборка 240 с.")
+    K = 4
+    C = level_weights(K)
+    flat = ones(K, K)
+    sled = Dict{Bool, Matrix{Float64}}()
+    for work in (false, true)
+        m = build(modes = 3, link = 0.0, memory = 0.0, band = 0.05, seed = 1)
+        detune!(m, 0.08, 901)
+        l = ones(K, K)
+        advance_trace!(m, 240.0, 16.0, C, l, 0.5, work)
+        sled[work] = l
+        close, pairs, _ = found_inside(m, K, 0.02)
+        @printf("   след о %-6s собрано %2d из %2d   %s\n",
+                work ? "работе" : "фазе", close, pairs, link_top(l, 4))
+        @printf("   %14s разброс %.3f … %.3f\n", "", minimum(l), maximum(l))
+    end
+    println("   Фазовый след у разных вибраций разного знака и при усреднении гасится;")
+    println("   след о работе неотрицателен и копится там, где уровень стоял: одна")
+    println("   запись помнит угол, другая — что связь через уровень шла.")
+
+    println("\n   тот же след в чужой среде, где заданной шкалы нет вовсе; вес следа")
+    println("   приведён к среднему 1, чтобы сравнивать не силу, а различение.")
+    for (name, carrier) in (("след о работе", sled[true] ./ mean(sled[true])),
+                            ("след о фазе", sled[false] ./ mean(sled[false])),
+                            ("ровный", flat))
+        for strength in (1.0, 4.0)
+            close, uni, err = 0, 0.0, 0.0
+            total = Dict{Tuple{Int, Int}, Int}()
+            for s in SEEDS
+                m = build(modes = 3, link = 0.0, memory = 0.0, band = 0.05, seed = s)
+                detune!(m, 0.08, 900 + s)
+                advance_trace!(m, 60.0, strength, flat, copy(carrier), 0.0, true)
+                c, _, counts = found_inside(m, K, 0.02)
+                close += c
+                uni += mean(unison(m, i) for i in 1:N)
+                err += tuning_error(m, 1)
+                for (key, n) in counts
+                    total[key] = get(total, key, 0) + n
+                end
+            end
+            n = length(SEEDS)
+            @printf("   связь %4.1f   %-13s нашлось %3d из %3d   сжатие %.3f   строй %.4f   %s\n",
+                    strength, name, close, 3 * N * n, uni / n, err / n, found_line(total))
+        end
+    end
+    println("   След о работе собирает не меньше всех и держит строй крепче ровного;")
+    println("   фазовый след при сильной связи уводит аккорд в совпадение, и строй при")
+    println("   нём хуже, чем вовсе без следа. Носителем может быть след, но только")
+    println("   тот, что помнит работу связи, а не угол.")
+
+    println("\n   несёт ли след выбор: среда со смещённой шкалой собирает 1:3.")
+    m = build(modes = 3, link = 0.0, memory = 0.0, band = 0.05, seed = 1)
+    detune!(m, 0.08, 901)
+    l = ones(K, K)
+    advance_trace!(m, 240.0, 16.0, level_bias(K, (1, 3), 16.0), l, 0.5, true)
+    biased = l ./ mean(l)
+    @printf("   след, наведённый на 1:3: %s\n", link_top(biased, 4))
+    for (name, carrier) in (("след 1:2", sled[true] ./ mean(sled[true])),
+                            ("след 1:3", biased), ("ровный", flat))
+        close, err = 0, 0.0
+        total = Dict{Tuple{Int, Int}, Int}()
+        for s in SEEDS
+            m = build(modes = 3, link = 0.0, memory = 0.0, band = 0.05, seed = s)
+            detune!(m, 0.08, 900 + s)
+            advance_trace!(m, 60.0, 4.0, flat, copy(carrier), 0.0, true)
+            c, _, counts = found_inside(m, K, 0.02)
+            close += c
+            err += tuning_error(m, 1)
+            for (key, n) in counts
+                total[key] = get(total, key, 0) + n
+            end
+        end
+        @printf("   %-9s нашлось %3d из %3d   строй %.4f   %s\n",
+                name, close, 3 * N * length(SEEDS), err / length(SEEDS), found_line(total))
+    end
+    println("   Выбор в следе есть: под следом, наведённым на 1:3, вперёд выходит 1:3,")
+    println("   под следом на 1:2 — 1:2. След не велит и не задаёт шкалу: он даёт")
+    println("   перевес тому, что среда уже держала.")
+
+    println("\n   сила убрана совсем: держит ли что-нибудь аккорд.")
+    was, after = 0, 0
+    for s in SEEDS
+        m = build(modes = 3, link = 0.0, memory = 0.0, band = 0.05, seed = s)
+        detune!(m, 0.08, 900 + s)
+        l = ones(K, K)
+        advance_trace!(m, 240.0, 16.0, C, l, 0.5, true)
+        was += found_inside(m, K, 0.02)[1]
+        advance_trace!(m, 60.0, 0.0, C, l, 0.0, true)
+        after += found_inside(m, K, 0.02)[1]
+    end
+    @printf("   нашлось при сборке %2d из %2d, после уборки силы %2d из %2d\n",
+            was, 3 * N * length(SEEDS), after, 3 * N * length(SEEDS))
+    println("   После уборки — ровно столько, сколько даёт сбитое состояние само по")
+    println("   себе: без силы носителя нет и у следа. След — носитель выбора, сила —")
+    println("   носитель величины; строй держится обоими сразу, как и всё в описании.")
 
     return nothing
 end
