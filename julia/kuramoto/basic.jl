@@ -7,8 +7,8 @@
 #
 #     состояние — частота; у одной вибрации их несколько: аккорд
 #     связь     — coupling: как одна вибрация тянет другую
-#     внутри    — inner: как моды тянут друг друга внутри вибрации; это та же
-#                 среда, только взятая близко: мода — вибрация меньшего масштаба
+#     внутри    — inside: среда внутри вибрации; та же среда, взятая близко:
+#                 её вибрации — моды этой вибрации, и она у каждой своя
 #     резонанс  — отклик по совпадению частот: полоса Π широкая — связь
 #                 отзывается на многое, узкая — только на совпадающее
 #     строй     — жёсткость аккорда: держит обертоны в их отношении
@@ -16,18 +16,22 @@
 #     память    — деформация связи тем, что совпало (русло) — и внутри тоже
 #
 #     θ̇ᵢₘ = ωᵢₘ + Σⱼₙ Wᵢⱼ S(ωⱼₙ − ωᵢₘ) sin(θⱼₙ − θᵢₘ)
-#                 + Σ_q Uₘq S(ωᵢ_q − ωᵢₘ) sin(θᵢ_q − θᵢₘ)
+#                 + Σ_q Uᵢₘq S(ωᵢ_q − ωᵢₘ) sin(θᵢ_q − θᵢₘ)
 #     ω̇ᵢₘ = Σⱼₙ Wᵢⱼ S(ωⱼₙ − ωᵢₘ) sin(θⱼₙ − θᵢₘ)
-#                 + Σ_q Uₘq S(ωᵢ_q − ωᵢₘ) sin(θᵢ_q − θᵢₘ)
+#                 + Σ_q Uᵢₘq S(ωᵢ_q − ωᵢₘ) sin(θᵢ_q − θᵢₘ)
 #                 − λ (ωᵢₘ − m ωᵢ₁) − γ (ωᵢₘ − ω₀ᵢₘ)
 #     Ẇᵢⱼ = ε ( Σₚₙ S cos(θᵢₚ − θⱼₙ) / Σₚₙ S − Wᵢⱼ )
-#     U̇ₘq = εᵤ ( Σᵢ S cos(θᵢₘ − θᵢ_q) / Σᵢ S − Uₘq )
+#     U̇ᵢₘq = εᵤ ( cos(θᵢₘ − θᵢ_q) − Uᵢₘq )    — у каждой вибрации своё русло
 #     S(Δ) = 1 / (1 + (Δ/Π)²)
 #
 # При одной моде на вибрацию и Π = ∞ это в точности прежние уравнения:
 # у вибрации была одна частота, отклик не зависел от совпадения.
-# Внутренняя связь U видна, только когда мод больше одной; при U = 0
+# Внутренняя связь Uᵢ видна, только когда мод больше одной; при Uᵢ = 0
 # прежнее чтение не меняется ни на число.
+#
+# Было приближение: связь внутри вибрации одна на все вибрации сразу, и наводилась
+# она тем, что совпало у них у всех. Здесь она у каждой своя — среда внутри
+# вибрации есть та же среда, и русло у неё своё.
 #
 # Запуск:
 #
@@ -45,31 +49,89 @@ const DT = 0.01     # шаг описания, с
 
 Среда — не набор объектов, а взаимодействие вибраций.
 У каждой вибрации не одна частота, а несколько: аккорд.
+И у каждой вибрации есть свой мир — та же среда, взятая близко (`inside`).
 
 - `omega0`   — свои частоты: `omega0[i, m]` — мода m вибрации i;
 - `omega`    — частоты сейчас: это и есть состояние;
 - `theta`    — фазы;
 - `coupling` — связь между вибрациями: `coupling[i, j]` — насколько j тянет i;
-- `inner`    — связь внутри вибрации: `inner[p, q]` — насколько мода q тянет
-              моду p в той же вибрации; та же среда, взятая близко;
 - `band`     — полоса отклика Π: чем уже, тем строже резонанс;
 - `tuning`   — λ: строй, жёсткость аккорда: держит обертоны в их отношении
               к основной частоте (`ωᵢₘ → m · ωᵢ₁`); при λ = 0 аккорд не держится;
 - `memory`   — ε: как быстро связь деформируется тем, что через неё прошло;
-- `inner_memory` — εᵤ: то же для связи внутри вибрации;
-- `damping`  — γ: как быстро частоты возвращаются к своим.
+- `damping`  — γ: как быстро частоты возвращаются к своим;
+- `inside`   — миры внутри вибраций: `inside[i]` — среда мод вибрации i, со
+              своими связью, полосой, строем, памятью и затуханием; `nothing` —
+              у вибрации мира нет.
+
+Среду собирают именованно — `Medium(omega0 = …, theta = …, coupling = …)` для
+заданного состояния и `build(…)` для сцены. Позиционной сборки нет нарочно:
+новая запись в `Medium` должна называться, а не вставать по счёту, — иначе она
+молча сдвинет все числа прежних чтений.
 """
-mutable struct Medium
-    omega0::Matrix{Float64}
-    omega::Matrix{Float64}
-    theta::Matrix{Float64}
-    coupling::Matrix{Float64}
-    inner::Matrix{Float64}
+mutable struct Medium{A<:AbstractMatrix{Float64}, B<:AbstractMatrix{Float64},
+                      C<:AbstractMatrix{Float64}, D<:AbstractMatrix{Float64}}
+    omega0::A
+    omega::B
+    theta::C
+    coupling::D
     band::Float64
     tuning::Float64
     memory::Float64
-    inner_memory::Float64
     damping::Float64
+    inside::Union{Nothing, Vector{Medium}}
+
+    function Medium(; omega0::AbstractMatrix{Float64},
+                      omega::AbstractMatrix{Float64} = copy(omega0),
+                      theta::AbstractMatrix{Float64},
+                      coupling::AbstractMatrix{Float64},
+                      band::Float64 = Inf, tuning::Float64 = 0.0,
+                      memory::Float64 = 0.0, damping::Float64 = 0.8,
+                      inside::Union{Nothing, Vector{Medium}} = nothing)
+        size(omega0) == size(omega) == size(theta) ||
+            throw(ArgumentError("состояние — одна раскладка: вибрации × моды"))
+        size(coupling) == (size(omega, 1), size(omega, 1)) ||
+            throw(ArgumentError("связь — между вибрациями: по числу вибраций"))
+        return new{typeof(omega0), typeof(omega), typeof(theta), typeof(coupling)}(
+            omega0, omega, theta, coupling, band, tuning, memory, damping, inside)
+    end
+end
+
+"""
+    world(medium, i)
+
+Среда внутри вибрации i — или `nothing`, если у вибрации мира нет. Мир не копия:
+он смотрит на те же числа, что и среда снаружи, а его вибрации — моды вибрации i.
+"""
+world(m::Medium, i::Int) = m.inside === nothing ? nothing : m.inside[i]
+
+"""
+    inside!(medium; coupling, band, memory, tuning, damping)
+
+Дать каждой вибрации свой мир: та же среда, взятая близко. Вибрации мира — моды
+вибрации; состояние у них общее с внешней средой (мир смотрит на ту же строку, а
+не на свою копию), а связь, полоса, строй, память и затухание у мира свои.
+
+По умолчанию мир берёт у среды снаружи полосу, строй и затухание, а память у
+него своя и её нет (εᵤ = 0): тогда мир ничего не добавляет к уже сказанному, и
+числа не двигаются.
+"""
+function inside!(m::Medium; coupling::AbstractMatrix{Float64},
+                  band::Float64 = m.band, memory::Float64 = 0.0,
+                  tuning::Float64 = m.tuning, damping::Float64 = m.damping)
+    modes = size(m.omega, 2)
+    size(coupling) == (modes, modes) ||
+        throw(ArgumentError("связь внутри вибрации — между её модами"))
+    worlds = Vector{Medium}(undef, size(m.omega, 1))
+    for i in eachindex(worlds)
+        worlds[i] = Medium(omega0 = reshape(view(m.omega0, i, :), modes, 1),
+                           omega = reshape(view(m.omega, i, :), modes, 1),
+                           theta = reshape(view(m.theta, i, :), modes, 1),
+                           coupling = copy(coupling), band = band,
+                           tuning = tuning, memory = memory, damping = damping)
+    end
+    m.inside = worlds
+    return m
 end
 
 """
@@ -83,12 +145,52 @@ end
 overlap(Δω::Float64, band::Float64) = 1 / (1 + (Δω / band)^2)
 
 """
+    inner_force!(world, drive, row)
+
+Сила, которой мир внутри вибрации тянет свои вибрации — моды вибрации `row`.
+Складывается туда же, куда среда сложила силы между вибрациями: вибрация делает
+один шаг, а не по шагу на масштаб.
+"""
+function inner_force!(w::Medium, drive::AbstractMatrix{Float64}, row::Int)
+    vibs = size(w.omega, 1)
+    for p in 1:vibs, q in 1:vibs
+        q == p && continue
+        s = overlap(w.omega[q, 1] - w.omega[p, 1], w.band)
+        drive[row, p] += w.coupling[p, q] * s * sin(w.theta[q, 1] - w.theta[p, 1])
+    end
+    return drive
+end
+
+"""
+    inner_trace!(world, dt)
+
+След внутри вибрации: связь в мире наводится тем, что через неё прошло, — как и
+связь между вибрациями, только у каждой вибрации это своё. Совпало — потому что
+через эту пару мод прошло именно это.
+"""
+function inner_trace!(w::Medium, dt::Float64)
+    vibs = size(w.omega, 1)
+    for p in 1:vibs, q in 1:vibs
+        q == p && continue
+        s = overlap(w.omega[q, 1] - w.omega[p, 1], w.band)
+        s == 0.0 && continue
+        target = cos(w.theta[p, 1] - w.theta[q, 1])
+        w.coupling[p, q] += dt * w.memory * (target - w.coupling[p, q])
+    end
+    return w
+end
+
+"""
     step!(medium, dt)
 
 Один шаг описания: связь двигает частоты, затухание возвращает их к своим,
 прошедшее деформирует связь. Внутри вибрации — тот же закон на меньшем
-масштабе: моды тянут друг друга, и то, что через них прошло, оставляет
-след там же.
+масштабе: моды тянут друг друга, и то, что через них прошло, оставляет след
+там же — у каждой вибрации в своём мире.
+
+Вибрация делает один шаг, а не по шагу на масштаб: силы всех масштабов
+складываются в одну. Мир внутри вибрации — среда, как и всё здесь, и его можно
+шагнуть отдельно (`step!(world(m, i), dt)`) — тогда он живёт сам.
 """
 function step!(m::Medium, dt::Float64)
     vibs, modes = size(m.omega)
@@ -104,19 +206,22 @@ function step!(m::Medium, dt::Float64)
         end
         drive[i, p] = d
     end
-    if !all(iszero, m.inner)
-        for i in 1:vibs, p in 1:modes, q in 1:modes
-            q == p && continue
-            s = overlap(m.omega[i, q] - m.omega[i, p], m.band)
-            drive[i, p] += m.inner[p, q] * s * sin(m.theta[i, q] - m.theta[i, p])
-        end
+    for i in 1:vibs
+        w = world(m, i)
+        (w === nothing || all(iszero, w.coupling)) && continue
+        inner_force!(w, drive, i)
     end
-    if m.tuning != 0.0
-        for i in 1:vibs, p in 2:modes
-            drive[i, p] -= m.tuning * (m.omega[i, p] - p * m.omega[i, 1])
+    # Строй и затухание: у кого есть мир — того держит мир, у кого нет — среда.
+    for i in 1:vibs, p in 1:modes
+        w = world(m, i)
+        tuning = w === nothing ? m.tuning : w.tuning
+        damping = w === nothing ? m.damping : w.damping
+        if p > 1 && tuning != 0.0
+            drive[i, p] -= tuning * (m.omega[i, p] - p * m.omega[i, 1])
         end
+        damping != 0.0 && (drive[i, p] -= damping * (m.omega[i, p] - m.omega0[i, p]))
     end
-    m.omega .+= dt .* (drive .- m.damping .* (m.omega .- m.omega0))
+    m.omega .+= dt .* drive
     m.theta .+= dt .* m.omega
     if m.memory != 0.0
         for i in 1:vibs, j in 1:vibs
@@ -131,21 +236,10 @@ function step!(m::Medium, dt::Float64)
             m.coupling[i, j] += dt * m.memory * (target - m.coupling[i, j])
         end
     end
-    if !all(iszero, m.inner) && m.inner_memory != 0.0
-        # След внутри вибрации: одна связь на все вибрации, поэтому она
-        # наводится тем, что совпало у них у всех сразу.
-        for p in 1:modes, q in 1:modes
-            q == p && continue
-            acc, weight = 0.0, 0.0
-            for i in 1:vibs
-                s = overlap(m.omega[i, q] - m.omega[i, p], m.band)
-                acc += s * cos(m.theta[i, p] - m.theta[i, q])
-                weight += s
-            end
-            weight == 0.0 && continue
-            target = acc / weight
-            m.inner[p, q] += dt * m.inner_memory * (target - m.inner[p, q])
-        end
+    for i in 1:vibs
+        w = world(m, i)
+        (w === nothing || w.memory == 0.0 || all(iszero, w.coupling)) && continue
+        inner_trace!(w, dt)
     end
     return m
 end
@@ -211,20 +305,36 @@ function unison(m::Medium, i::Int)
 end
 
 """
+    inner_links(medium)
+
+Связь внутри каждой вибрации своим рядом: у каждой вибрации свой мир, и своё
+русло в нём. Пустой ряд значит, что миров нет — у вибрации меньше двух мод.
+"""
+function inner_links(m::Medium)
+    links = Float64[]
+    m.inside === nothing && return links
+    for w in m.inside
+        modes = size(w.coupling, 1)
+        modes < 2 && continue
+        s = 0.0
+        for p in 1:modes, q in 1:modes
+            p == q && continue
+            s += w.coupling[p, q]
+        end
+        push!(links, s / (modes * (modes - 1)))
+    end
+    return links
+end
+
+"""
     inner_link(medium)
 
-Средняя связь мод внутри вибрации — по парам, без диагонали. То, что
-навела внутренняя среда.
+Средняя связь внутри вибрации — по мирам: у каждой вибрации свой мир, и своё
+русло в нём. Это то, что навела внутренняя среда.
 """
 function inner_link(m::Medium)
-    modes = size(m.inner, 1)
-    modes < 2 && return 0.0
-    acc = 0.0
-    for p in 1:modes, q in 1:modes
-        p == q && continue
-        acc += m.inner[p, q]
-    end
-    return acc / (modes * (modes - 1))
+    links = inner_links(m)
+    return isempty(links) ? 0.0 : sum(links) / length(links)
 end
 
 """
@@ -262,15 +372,17 @@ drift(m::Medium, i::Int, p::Int = 1) = abs(m.omega[i, p] - m.omega0[i, p])
             memory = 1e-3, inner = 0.0, inner_memory = 0.0,
             inner_matrix = nothing, damping = 0.8, seed = 4)
 
-Построить среду: N вибраций, у каждой modes частот.
+Построить среду: N вибраций, у каждой modes частот и свой мир внутри.
 
 При `modes = 1` и `band = Inf` это прежнее описание: одна частота на вибрацию,
 отклик без различия совпадений. Аккорд, полоса и строй — тот же самый язык,
 просто теперь в нём есть то, что слово называло аккордом.
 
-`inner` — связь мод внутри вибрации: то же, что `link`, но на меньшем
-масштабе. Своя матрица (`inner_matrix`) задаётся, когда связь внутри должна
-зависеть от того, какие это моды, а не только от того, насколько они совпали.
+`inner` — связь внутри вибрации: то же, что `link`, но на меньшем масштабе, и
+своя у каждой вибрации. Своя матрица (`inner_matrix`) задаётся, когда связь
+внутри должна зависеть от того, какие это моды, а не только от того, насколько
+они совпали; каждому миру достаётся её копия. `inner_memory` — εᵤ: русло внутри,
+то же, что `memory`, но на меньшем масштабе, и тоже своё у каждой вибрации.
 """
 function build(; modes::Int = 1, link::Float64 = 0.6, band::Float64 = Inf,
                  tuning::Float64 = 0.0, memory::Float64 = 1e-3,
@@ -292,8 +404,10 @@ function build(; modes::Int = 1, link::Float64 = 0.6, band::Float64 = Inf,
     for p in 1:modes
         U[p, p] = 0.0                              # мода не тянет саму себя
     end
-    return Medium(omega0, copy(omega0), theta, fill(link / N, N, N), U,
-                  band, tuning, memory, inner_memory, damping)
+    m = Medium(omega0 = omega0, theta = theta, coupling = fill(link / N, N, N),
+               band = band, tuning = tuning, memory = memory, damping = damping)
+    modes > 1 && inside!(m, coupling = U, memory = inner_memory)
+    return m
 end
 
 """

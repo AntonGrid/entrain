@@ -830,6 +830,29 @@ function main()
     println("   как связь между вибрациями. И так же, как там, отношения она не")
     println("   создаёт: она закрепляет то, что уже почти было.")
 
+    println("\n--- у каждой вибрации своё русло внутри " * "-"^21)
+    println("   Связь внутри вибрации наводится тем, что прошло через эту вибрацию,")
+    println("   а не через всех сразу: русло у каждой своё. Спрашивается, расходятся")
+    println("   ли они и держит ли тогда аккорд каждая по себе.")
+    for inner_memory in (0.0, 1e-3)
+        own = [(begin
+            m = build(modes = 3, inner = 1.5, inner_memory = inner_memory,
+                      memory = 0.0, seed = s)
+            advance!(m, 60.0)
+            links = inner_links(m)
+            errs = sort([tuning_error(m, i) for i in eachindex(links)])
+            (minimum(links), maximum(links), errs[cld(length(errs), 2)], errs[end])
+        end) for s in SEEDS]
+        @printf("   память внутри %.0e   русло у каждой %.4f … %.4f   строй по всем: середина %.3f … %.3f, худший %.3f … %.3f\n",
+                inner_memory,
+                minimum(o[1] for o in own), maximum(o[2] for o in own),
+                minimum(o[3] for o in own), maximum(o[3] for o in own),
+                minimum(o[4] for o in own), maximum(o[4] for o in own))
+    end
+    println("   Без памяти внутри все миры одинаковы (1.5000 у каждой): спросить")
+    println("   нечего. С памятью русло у каждой своё: вибрации, слышавшие разное,")
+    println("   расходятся, — прежде их сводила к одному общая связь на всех.")
+
     println("\n--- строй как след: запоминает ли среда само отношение " * "-"^2)
     println("   толчок обертону на 0.5, затем минута; λ = 0, γ = 0.8, отклик по")
     println("   отношению с полосой 0.3. Норма — то, что среда считает отношением.")

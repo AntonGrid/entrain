@@ -76,7 +76,7 @@ function two_lumps(; tie::Float64 = 0.0, gap::Float64 = 0.0, band::Float64 = Inf
     end
     W[n, n+1] = tie
     W[n+1, n] = tie
-    m = Medium(omega0, copy(omega0), theta, W, zeros(1, 1), band, 0.0, 0.0, 0.0, 0.8)
+    m = Medium(omega0 = omega0, theta = theta, coupling = W, band = band)
     advance!(m, warming)
 
     steps = round(Int, reading / DT)

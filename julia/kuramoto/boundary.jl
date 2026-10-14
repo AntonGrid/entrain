@@ -77,7 +77,7 @@ function strand(; reach::Int = 1, tie::Float64 = 0.0, gap::Float64 = 0.0,
     end
     W[t, n] = tie
     W[n, t] = tie
-    m = Medium(omega0, copy(omega0), theta, W, zeros(1, 1), band, 0.0, 0.0, 0.0, 0.8)
+    m = Medium(omega0 = omega0, theta = theta, coupling = W, band = band)
     advance!(m, warming)
     here = mean(m.omega[1:n, 1])
     taken = (m.omega[t, 1] - m.omega0[t, 1]) / (here - m.omega0[t, 1])
@@ -95,8 +95,8 @@ function unison(; band::Float64 = Inf, spread::Float64 = 0.15, seed::Int = 1)
     rng = MersenneTwister(seed)
     om = 1.0 .+ spread .* randn(rng, n)
     th = 2π .* rand(rng, n)
-    m = Medium(reshape(om, n, 1), reshape(copy(om), n, 1), reshape(copy(th), n, 1),
-               fill(0.6 / n, n, n), zeros(1, 1), band, 0.0, 0.0, 0.0, 0.8)
+    m = Medium(omega0 = reshape(om, n, 1), theta = reshape(copy(th), n, 1),
+               coupling = fill(0.6 / n, n, n), band = band)
     advance!(m, 60.0)
     return coherence(m), resonance(m)
 end
