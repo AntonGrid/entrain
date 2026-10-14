@@ -642,6 +642,33 @@ function checks()
     push!(results, report_zeros("λ = 0: перестановка индексов мод не меняет чисел", worst, TOL_EXACT))
     push!(results, report_at_least("λ > 0: меняет — строй и делает первую моду первой", control, 1e-3))
 
+    # Строй входит в закон не сам, а суммой с затуханием: у промаха обертона один
+    # множитель на шаг — 1 − (λ+γ)·dt. Это видно прямо в записи: на ω_p действуют и
+    # строй, и затухание, а на ω₁ — только затухание, поэтому у r = ω_p − p·ω₁ оба
+    # слагаемых складываются. Проверка идёт по раскладам одной суммы (λ+γ = 16.8) и
+    # прямо против шага: там, где γ велика, различие между суммой и одним λ·dt уже не
+    # в последнем знаке — это и показывает второй контроль.
+    worst, short = 0.0, 0.0
+    for (lam, γ) in ((16.0, 0.8), (8.8, 8.0), (15.2, 1.6), (14.8, 2.0)), seed in 1:6
+        m = build(modes = 3, band = 0.1, tuning = lam, damping = γ, seed = seed)
+        advance!(m, 60.0)
+        for i in 1:size(m.omega, 1), p in 2:size(m.omega, 2)
+            r0 = m.omega0[i, p] - p * m.omega0[i, 1]
+            r = m.omega[i, p] - p * m.omega[i, 1]
+            dr, d1 = drag(m, i, p), drag(m, i, 1)
+            step!(m, DT)
+            after = m.omega[i, p] - p * m.omega[i, 1]
+            held = r + DT * (dr - p * d1 + γ * r0 - (lam + γ) * r)
+            alone = r + DT * (dr - p * d1 + γ * r0 - lam * r)
+            worst = max(worst, abs(after - held))
+            short = max(short, abs(after - alone))
+        end
+    end
+    push!(results, report_zeros("промах обертона множится за шаг на 1 − (λ+γ)·dt — у суммы один множитель",
+                                worst, TOL_EXACT))
+    push!(results, report_at_least("а у одного λ·dt (без γ в сумме) тот же множитель не сходится",
+                                   short, 1e-4))
+
     return results
 end
 
