@@ -133,6 +133,29 @@ function pull(m::Medium)
 end
 
 """
+    drag(medium, i, p)
+
+Тяга связи на моду (i, p) — ровно тот член, что складывается в `step!`, без строя
+и без затухания:
+
+Σⱼₙ Wᵢⱼ S(ωⱼₙ−ωᵢₚ) sin(θⱼₙ−θᵢₚ).
+
+Со строем и затуханием он и спорит: промах обертона стоит там, где силы
+уравновесились.
+"""
+function drag(m::Medium, i::Int, p::Int)
+    d = 0.0
+    for j in 1:size(m.omega, 1)
+        j == i && continue
+        for n in 1:size(m.omega, 2)
+            s = overlap(m.omega[j, n] - m.omega[i, p], m.band)
+            d += m.coupling[i, j] * s * sin(m.theta[j, n] - m.theta[i, p])
+        end
+    end
+    return d
+end
+
+"""
     state_gap(a, b)
 
 Отличие двух состояний: наибольшее из отличий по частотам и по фазам. Ноль
@@ -559,6 +582,65 @@ function checks()
     strong = lump_pair(tie = 12.8, gap = 0.2, band = 0.1)
     push!(results, report_zeros("пересилить нельзя: и при перемычке 12.8 себя не сдвинуть",
                                 abs(pull(strong)), TOL_EXACT))
+
+    println("\nстрой: чем держится аккорд")
+
+    # Строй — не число среды, а натяжение, и равновесие обертона говорит, чему он
+    # равен. λ держит только обертоны (p > 1), а основную частоту не держит вовсе —
+    # связь тянет её наравне со всеми, и её уход входит в промах обертона
+    # множителем p:
+    #
+    #     x_p = |D_p + γ·r₀_p − p·D₁| / ((λ + γ)·p·ω₁),
+    #
+    # где r₀_p — написанный промах, D_p — тяга связи на моду. Это то же число, что
+    # читает сцена `tension.jl`, но здесь оно выведено из уравнений, а не найдено:
+    # поэтому и проверяется сверкой, а не порогом.
+    worst, short = 0.0, 0.0
+    for lam in (8.0, 32.0), seed in 1:6
+        m = build(modes = 3, band = 0.1, tuning = lam, seed = seed)
+        advance!(m, 60.0)
+        γ = m.damping
+        for i in 1:size(m.omega, 1), p in 2:size(m.omega, 2)
+            base = abs(m.omega[i, 1])
+            r0 = m.omega0[i, p] - p * m.omega0[i, 1]
+            x = abs(m.omega[i, p] - p * m.omega[i, 1]) / (p * base)
+            held = abs(drag(m, i, p) + γ * r0 - p * drag(m, i, 1)) / ((lam + γ) * p * base)
+            cut = abs(drag(m, i, p) + γ * r0) / ((lam + γ) * p * base)
+            worst = max(worst, abs(x - held))
+            short = max(short, abs(x - cut))
+        end
+    end
+    push!(results, report_zeros("промах обертона равен равновесию сил: |D_p + γ·r₀_p − p·D₁|/((λ+γ)·p·ω₁)",
+                                worst, TOL_SCHEME))
+    push!(results, report_at_least("а без тяги на основную частоту формула расходится", short, 1e-2))
+
+    # Основная частота — не особенность нумерации, а то, что делает строй: закон
+    # ничего не говорит о том, какая мода первая. При λ = 0 перестановка индексов
+    # мод не меняет чисел — за шаг это ровно ноль. При λ > 0 меняет, и это не
+    # изъян: перестановка и есть подмена того, что строй называет первым.
+    perm = [2, 3, 1]
+    back = invperm(perm)
+    worst, control = 0.0, Inf
+    for seed in 1:6
+        a = build(modes = 3, band = 0.1, seed = seed)
+        b = Medium(omega0 = a.omega0[:, perm], theta = a.theta[:, perm],
+                   coupling = copy(a.coupling), band = a.band, damping = a.damping,
+                   tuning = a.tuning, memory = a.memory)
+        step!(a, DT)
+        step!(b, DT)
+        worst = max(worst, maximum(abs.(b.omega[:, back] .- a.omega)),
+                           maximum(abs.(b.theta[:, back] .- a.theta)))
+        c = build(modes = 3, band = 0.1, tuning = 8.0, seed = seed)
+        d = Medium(omega0 = c.omega0[:, perm], theta = c.theta[:, perm],
+                   coupling = copy(c.coupling), band = c.band, damping = c.damping,
+                   tuning = c.tuning, memory = c.memory)
+        step!(c, DT)
+        step!(d, DT)
+        control = min(control, maximum(abs.(d.omega[:, back] .- c.omega)),
+                              maximum(abs.(d.theta[:, back] .- c.theta)))
+    end
+    push!(results, report_zeros("λ = 0: перестановка индексов мод не меняет чисел", worst, TOL_EXACT))
+    push!(results, report_at_least("λ > 0: меняет — строй и делает первую моду первой", control, 1e-3))
 
     return results
 end
