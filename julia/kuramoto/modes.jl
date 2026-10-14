@@ -16,6 +16,11 @@
 # Память записывается двумя способами — угол кратной фазы и сама работа уровня;
 # разница между ними и есть ответ.
 #
+# За ним третий: важно ли, что именно помнить. Отбор уровня везде один, а
+# запись — разная: работа, срабатывание, отрыв, порог, работа в фазе, меткость.
+# Различие между ними оказалось не в содержании, а в разборчивости записи —
+# и у разборчивости есть цена.
+#
 # Запуск:
 #
 #     julia julia/kuramoto/modes.jl
@@ -432,6 +437,164 @@ function advance_trace!(m::Medium, seconds::Float64, strength::Float64,
 end
 
 """
+    record_signal(S, d, kind)
+
+Что именно помнится об отборе. Отбор везде один: уровень (k, j) — это
+отношение k·ω_p ≈ j·ω_q, и работает он тем сильнее, чем точнее совпадение
+(матрица `S`), а промах меряется расстройкой `d = k·ω_p − j·ω_q`.
+
+Записывается отбор по-разному:
+
+- `:work`   — сама работа уровня: `S[k, j]`;
+- `:winner` — работа того уровня, что за эту пару сработал сильнее всех;
+- `:margin` — насколько он обошёл следующего за ним: отрыв;
+- `:hold`   — сработал ли он больше половины: порог вместо меры;
+- `:sharp`  — точность попадания: `S[k, j] / |d|` — меткость.
+
+Все они берутся по одной паре (i, p, q); сложение идёт после, поэтому
+нелинейность (победитель, порог) считается там, где она и происходит — в
+паре, а не в среднем. Фазовая работа сюда не входит: она спрашивает не о
+паре, а о согласии фаз, и берётся сразу по всем парам (см. `:coherent`).
+"""
+function record_signal(S::Matrix{Float64}, d::Matrix{Float64}, kind::Symbol)
+    K = size(S, 1)
+    raw = zeros(K, K)
+    if kind === :work
+        return copy(S)
+    elseif kind === :sharp
+        for k in 1:K, j in 1:K
+            raw[k, j] = S[k, j] / (abs(d[k, j]) + 1e-3)
+        end
+        return raw
+    end
+    best, second, bk, bj = -Inf, -Inf, 1, 1
+    for k in 1:K, j in 1:K
+        if S[k, j] > best
+            second = best
+            best, bk, bj = S[k, j], k, j
+        elseif S[k, j] > second
+            second = S[k, j]
+        end
+    end
+    gap = best - (second == -Inf ? 0.0 : second)
+    if kind === :winner
+        raw[bk, bj] = best
+    elseif kind === :margin
+        raw[bk, bj] = gap
+    elseif kind === :hold
+        for k in 1:K, j in 1:K
+            raw[k, j] = S[k, j] > 0.5 ? 1.0 : 0.0
+        end
+    else
+        error("kind: $kind")
+    end
+    return raw
+end
+
+"""
+    step_record!(medium, dt, strength, C, link, eps, kind)
+
+Тот же шаг, что `step_trace!`, но запись памяти выбрана вопросом «что помнить».
+
+Отбор уровня — один и тот же во всех случаях (ближайший уровень тянет частоту).
+Меняется только то, чем отбор записан: `record_signal` берёт его по каждой
+паре, а `:coherent` — по всем сразу:
+
+- `:coherent` — работа, взятая в фазе: |⟨S·e^(i·Δθ)⟩|, то есть работа, что была
+                согласна, а не просто шла.
+
+Сравнение честное только при общей мере: запись приводится к среднему 1.
+"""
+function step_record!(m::Medium, dt::Float64, strength::Float64,
+                      C::Matrix{Float64}, link::Matrix{Float64},
+                      eps::Float64, kind::Symbol)
+    vibs, modes = size(m.omega)
+    K = size(C, 1)
+    drive = zeros(vibs, modes)
+    for i in 1:vibs, p in 1:modes, q in 1:modes
+        q == p && continue
+        for k in 1:K, j in 1:K
+            w = strength * C[k, j] * link[k, j]
+            w == 0.0 && continue
+            s = overlap(k * m.omega[i, p] - j * m.omega[i, q], m.band)
+            drive[i, p] += w * s * (j * m.omega[i, q] / k - m.omega[i, p])
+        end
+    end
+    m.omega .+= dt .* (drive .- m.damping .* (m.omega .- m.omega0))
+    m.theta .+= dt .* m.omega
+    eps == 0.0 && return m
+
+    if kind === :coherent
+        re = zeros(K, K)
+        im = zeros(K, K)
+        n = 0
+        for i in 1:vibs, p in 1:modes, q in 1:modes
+            q == p && continue
+            n += 1
+            for k in 1:K, j in 1:K
+                s = overlap(k * m.omega[i, p] - j * m.omega[i, q], m.band)
+                d = k * m.theta[i, p] - j * m.theta[i, q]
+                re[k, j] += s * cos(d)
+                im[k, j] += s * sin(d)
+            end
+        end
+        n == 0 && return m
+        for k in 1:K, j in 1:K
+            raw = sqrt(re[k, j]^2 + im[k, j]^2) / n
+            link[k, j] += dt * eps * (raw - link[k, j])
+        end
+        return m
+    end
+
+    acc = zeros(K, K)
+    n = 0
+    for i in 1:vibs, p in 1:modes, q in 1:modes
+        q == p && continue
+        n += 1
+        S = zeros(K, K)
+        d = zeros(K, K)
+        for k in 1:K, j in 1:K
+            S[k, j] = overlap(k * m.omega[i, p] - j * m.omega[i, q], m.band)
+            d[k, j] = k * m.omega[i, p] - j * m.omega[i, q]
+        end
+        acc .+= record_signal(S, d, kind)
+    end
+    n == 0 && return m
+    raw = acc ./ n
+    for k in 1:K, j in 1:K
+        link[k, j] += dt * eps * (raw[k, j] - link[k, j])
+    end
+    return m
+end
+
+"""
+    advance_record!(medium, seconds, strength, C, link, eps, kind)
+
+Прожить средой время по шагу, где запись памяти выбрана вопросом.
+"""
+function advance_record!(m::Medium, seconds::Float64, strength::Float64,
+                         C::Matrix{Float64}, link::Matrix{Float64},
+                         eps::Float64, kind::Symbol)
+    for _ in 1:round(Int, seconds / DT)
+        step_record!(m, DT, strength, C, link, eps, kind)
+    end
+    return m
+end
+
+"Запись, приведённая к среднему 1: сравниваются различение, а не сила."
+function to_carrier(link::Matrix{Float64})
+    ml = mean(link)
+    return ml == 0.0 ? copy(link) : abs.(link ./ ml)
+end
+
+"Доля веса на первом по величине уровне: насколько запись говорит о прочем."
+function top_share(link::Matrix{Float64})
+    s = sum(abs.(link))
+    return s == 0.0 ? 0.0 : maximum(abs.(link)) / s
+end
+
+
+"""
     level_bias(K, level, bias)
 
 Та же шкала, но одному уровню отдан больший вес: среда с такой шкалой
@@ -613,8 +776,9 @@ function main()
         @printf("   строй λ = %.1f            строй после толчка %.4f … %.4f\n",
                 strength, minimum(stiff), maximum(stiff))
     end
-    println("   Толчок обертону возвращают оба: и λ, и отклик по отношению. Разница")
-    println("   в другом — и видна она на толчке основной.")
+    println("   Толчок обертону возвращают оба, но не под всяким начальным условием:")
+    println("   и у λ = 2.0, и у отклика с узкой полосой остаётся иногда больше самого")
+    println("   толчка. Разница в другом — и видна она на толчке основной.")
     println("\n   толчок основной: сдвинуть первую моду на 0.3, затухание выключено,")
     println("   чтобы возвращала именно связь. Смотрим и частоту, и отношение.")
     for bandr in (0.1, 0.3)
@@ -645,7 +809,8 @@ function main()
     println("   её не вернуло, и отклонение осталось в разы больше самого толчка.")
     println("   Отклик по отношению держит и её: у части начальных условий основная")
     println("   возвращается почти совсем, у части — уезжает. Гарантии нет, но")
-    println("   привязка есть, и отношение он держит строже, чем λ.")
+    println("   привязка есть: на 1.10 отношение он держит строже λ, на 1.13 —")
+    println("   наравне, а при узкой полосе 0.10 бывает и хуже λ.")
 
     println("\n--- след внутри вибрации " * "-"^32)
     for inner_memory in (0.0, 1e-3)
@@ -804,8 +969,8 @@ function main()
     @printf("   вес ровный    нашлось %2d из %2d   сжатие %.3f … %.3f\n",
             sum(e[1] for e in even), 3 * N * length(SEEDS),
             minimum(e[2] for e in even), maximum(e[2] for e in even))
-    println("   Ровный вес собирает не меньше и сжимает не сильнее: иерархия весов не")
-    println("   нужна, довольно самих уровней. Шкала — это разрешение, а не порядок.")
+    println("   Ровный вес собирает не меньше, а сжатие при нём того же порядка, что при")
+    println("   весе 1/(k·j): иерархия весов не нужна — шкала это разрешение, а не порядок.")
 
     println("\n   толчок обертону 0.3, затем минута: возвращается ли собранное.")
     for (strength, eps) in ((16.0, 0.0), (16.0, 1e-2), (4.0, 1e-2))
@@ -828,8 +993,8 @@ function main()
     println("   Без памяти собранное возвращается ровно, а с памятью — хуже: в")
     println("   наведённый вес входит не только то, что стояло, но и то, что нет,")
     println("   поэтому он слабее заданного. Садится след на те же уровни, которыми")
-    println("   аккорд и держался: (2,4) — это то же 1:2, взятое вдвое. Среда")
-    println("   закрепляет не событие, а то, что сходилось.")
+    println("   аккорд и держался, только взятые выше: (2,4) на 1.10 — то же 1:2, (1,3)")
+    println("   на 1.13 — терция. Среда закрепляет не событие, а то, что сходилось.")
 
     println("\n   а если частоты не кратны ни к чему: 0.6 … 1.8, аккорда не строят.")
     for strength in (1.0, 8.0)
@@ -936,21 +1101,170 @@ function main()
     println("   перевес тому, что среда уже держала.")
 
     println("\n   сила убрана совсем: держит ли что-нибудь аккорд.")
-    was, after = 0, 0
+    raw, was, after = 0, 0, 0
     for s in SEEDS
         m = build(modes = 3, link = 0.0, memory = 0.0, band = 0.05, seed = s)
         detune!(m, 0.08, 900 + s)
+        raw += found_inside(m, K, 0.02)[1]
         l = ones(K, K)
         advance_trace!(m, 240.0, 16.0, C, l, 0.5, true)
         was += found_inside(m, K, 0.02)[1]
         advance_trace!(m, 60.0, 0.0, C, l, 0.0, true)
         after += found_inside(m, K, 0.02)[1]
     end
-    @printf("   нашлось при сборке %2d из %2d, после уборки силы %2d из %2d\n",
-            was, 3 * N * length(SEEDS), after, 3 * N * length(SEEDS))
+    @printf("   сбитое состояние само по себе %2d из %2d, при сборке %2d из %2d, после уборки силы %2d из %2d\n",
+            raw, 3 * N * length(SEEDS), was, 3 * N * length(SEEDS), after, 3 * N * length(SEEDS))
     println("   После уборки — ровно столько, сколько даёт сбитое состояние само по")
     println("   себе: без силы носителя нет и у следа. След — носитель выбора, сила —")
     println("   носитель величины; строй держится обоими сразу, как и всё в описании.")
+
+    println("\n--- а важно ли, что именно помнить: шесть записей одной связи и угол фазы " * "-"^2)
+    println("   отбор везде один (ближайший уровень тянет частоту) — меняется только то,")
+    println("   чем он записан. Запись приводится к среднему 1, чтобы сравнивать не силу,")
+    println("   а различение. Две среды наведения, шесть чужих сред на перенос; строй")
+    println("   берётся по всем вибрациям и печатается серединой и худшим — средний")
+    println("   обманывает: одна среда, потерявшая аккорд, тянет его на себя.")
+    записи = ((:work, "работа"), (:winner, "срабатывание"), (:margin, "отрыв"),
+              (:hold, "порог"), (:coherent, "работа в фазе"), (:sharp, "меткость"),
+              (:phase, "угол фазы"))
+    for (kind, name) in записи
+        close, errs = 0, Float64[]
+        total = Dict{Tuple{Int, Int}, Int}()
+        shares = Float64[]
+        for seed in (1, 2)
+            m = build(modes = 3, link = 0.0, memory = 0.0, band = 0.05, seed = seed)
+            detune!(m, 0.08, 901)
+            l = ones(K, K)
+            if kind === :phase
+                advance_trace!(m, 240.0, 16.0, C, l, 0.5, false)
+            else
+                advance_record!(m, 240.0, 16.0, C, l, 0.5, kind)
+            end
+            push!(shares, top_share(l))
+            carrier = to_carrier(l)
+            for s in SEEDS
+                m2 = build(modes = 3, link = 0.0, memory = 0.0, band = 0.05, seed = s)
+                detune!(m2, 0.08, 900 + s)
+                advance_trace!(m2, 60.0, 4.0, flat, copy(carrier), 0.0, true)
+                c, _, counts = found_inside(m2, K, 0.02)
+                close += c
+                push!(errs, mean(tuning_error(m2, i) for i in 1:N))
+                for (key, n) in counts
+                    total[key] = get(total, key, 0) + n
+                end
+            end
+        end
+        sort!(errs)
+        @printf("   %-14s нашлось %3d из %3d   строй %.4f … %.4f   доля первого %.3f   %s\n",
+                name, close, 3 * N * length(SEEDS) * 2, errs[cld(length(errs), 2)], errs[end],
+                mean(shares), found_line(total))
+    end
+    for (name, carrier) in (("ровный", flat),)
+        close, errs = 0, Float64[]
+        total = Dict{Tuple{Int, Int}, Int}()
+        for s in SEEDS
+            m = build(modes = 3, link = 0.0, memory = 0.0, band = 0.05, seed = s)
+            detune!(m, 0.08, 900 + s)
+            advance_trace!(m, 60.0, 4.0, flat, copy(carrier), 0.0, true)
+            c, _, counts = found_inside(m, K, 0.02)
+            close += c
+            push!(errs, mean(tuning_error(m, i) for i in 1:N))
+            for (key, n) in counts
+                total[key] = get(total, key, 0) + n
+            end
+        end
+        sort!(errs)
+        @printf("   %-14s нашлось %3d из %3d   строй %.4f … %.4f   %s\n",
+                name, close, 3 * N * length(SEEDS), errs[cld(length(errs), 2)], errs[end],
+                found_line(total))
+    end
+    println("   Работа, срабатывание, порог и отрыв держат строй крепче ровного — по")
+    println("   середине и по худшему, и на 1.10, и на 1.13. Работа в фазе крепче по")
+    println("   середине, но на 1.13 её худший строй хуже ровного: одной среде аккорд не")
+    println("   удержать. Угол фазы серединой рядом с ровным, а худшим много хуже — и на")
+    println("   1.13 он уводит аккорд в совпадение, как меткость на 1.10. Меткость")
+    println("   держится по-разному: на 1.10 она уводит аккорд в совпадение (в найденном")
+    println("   есть 1:1 и 3:3) — тогда точное попадание и есть слияние; на 1.13 этих")
+    println("   следов почти нет. Доля первого уровня — мера разборчивости записи, а не")
+    println("   крепости строя: она говорит, сколько записано тому, чего не было, и ничего")
+    println("   не говорит о том, удержится ли строй.")
+
+    println("\n   и у различения есть цена: несёт ли такая запись выбор.")
+    println("   проба одна и та же дважды, меняется лишь смещение шкалы: след наводится")
+    println("   ею и переносится в ровную среду. Печатается и то, что записано в")
+    println("   носителе, и то, что из этого переносится; у ровного носителя та же доля —")
+    println("   мерило: столько среда даёт сама, и выбирать в нём нечего. В скобках у")
+    println("   наведённого уровня — насколько он выше мерила, в пунктах.")
+    is_octave(k, j) = (k, j) == (2, 1) || (k, j) == (1, 2)
+    is_terce(k, j) = (k, j) == (3, 1) || (k, j) == (1, 3)
+    # Доля веса носителя, приходящаяся на уровень (k, j).
+    доля(l, k, j) = abs(l[k, j]) / sum(abs.(l))
+    function transfer(carriers)
+        oct, ter, all = 0, 0, 0
+        for carrier in carriers, s in SEEDS
+            m2 = build(modes = 3, link = 0.0, memory = 0.0, band = 0.05, seed = s)
+            detune!(m2, 0.08, 900 + s)
+            advance_trace!(m2, 60.0, 4.0, flat, copy(carrier), 0.0, true)
+            _, _, counts = found_inside(m2, K, 0.02)
+            for ((k, j), n) in counts
+                all += n
+                is_octave(k, j) && (oct += n)
+                is_terce(k, j) && (ter += n)
+            end
+        end
+        return oct, ter, all
+    end
+    function carrier_of(kind, target, seed)
+        m = build(modes = 3, link = 0.0, memory = 0.0, band = 0.05, seed = seed)
+        detune!(m, 0.08, 901)
+        l = ones(K, K)
+        if kind === :phase
+            advance_trace!(m, 240.0, 16.0, level_bias(K, target, 16.0), l, 0.5, false)
+        else
+            advance_record!(m, 240.0, 16.0, level_bias(K, target, 16.0), l, 0.5, kind)
+        end
+        return to_carrier(l)
+    end
+    function строка(name, carriers, target, мерило)
+        oct, ter, all = transfer(carriers)
+        д2, д3 = 100 * oct / all, 100 * ter / all
+        к2 = target == (1, 2) ? @sprintf(" %+3.0f", д2 - 100 * мерило) : ""
+        к3 = target == (1, 3) ? @sprintf(" %+3.0f", д3 - 100 * мерило) : ""
+        @printf("   %-14s носитель: 1:2 %.3f  1:3 %.3f  слияние %.3f   → перенос 1:2 %3d из %3d (%2.0f%%%s)   1:3 %3d (%2.0f%%%s)\n",
+                name, доля(carriers[1], 2, 1), доля(carriers[1], 3, 1), доля(carriers[1], 1, 1),
+                oct, all, д2, к2, ter, д3, к3)
+    end
+    список = ((:work, "работа"), (:winner, "срабатывание"), (:margin, "отрыв"),
+              (:hold, "порог"), (:coherent, "работа в фазе"), (:sharp, "меткость"),
+              (:phase, "угол фазы"))
+    println()
+    окт0, тер0, всего0 = transfer((flat,))
+    @printf("   %-14s октава 1:2 %3d из %3d (%2.0f%%)   терция 1:3 %3d из %3d (%2.0f%%)   — мерило без выбора\n",
+            "ровный", окт0, всего0, 100 * окт0 / всего0, тер0, всего0, 100 * тер0 / всего0)
+    for (проба, target) in (("проба первая: шкала смещена на 1:2.", (1, 2)),
+                            ("проба вторая: шкала смещена на 1:3.", (1, 3)))
+        println()
+        println("   " * проба)
+        мерило = target == (1, 2) ? окт0 / всего0 : тер0 / всего0
+        for (kind, name) in список
+            строка(name, [carrier_of(kind, target, seed) for seed in (1, 2)], target, мерило)
+        end
+    end
+    println("   Что записано — то и переносится. Работа, срабатывание, порог и работа")
+    println("   в фазе держат наведённый уровень первым по весу, и он выше мерила в")
+    println("   обеих пробах: октава под 1:2 и терция под 1:3; вперёд по доле он")
+    println("   выходит всюду, кроме работы в фазе на 1.13 — там октава обгоняет")
+    println("   терцию на пункт. Отрыв держит терцию при любой наводке, а октаву не")
+    println("   переносит вовсе: под наводкой на терцию перенос терции усиливается")
+    println("   лишь потому, что запись и наводка совпали. Меткость держит слияние")
+    println("   (1,1) — оно у неё первым по весу, а уровень следом: под наводкой на")
+    println("   терцию вперёд всё равно идёт октава, а терция остаётся ниже мерила.")
+    println("   Угол фазы держится неустойчиво: носитель почти гасится, и приведение")
+    println("   к среднему раздувает остаток в произвол — в обеих пробах вперёд идёт")
+    println("   октава, даже когда наведена терция, и сама прибавка к мерилу гуляет:")
+    println("   19 пунктов на 1.10 против 1 на 1.13. Цена разборчивости —")
+    println("   неспособность выбрать заново: отрыву и меткости достаётся самая")
+    println("   большая доля веса в носителе, а выбора в них нет.")
 
     return nothing
 end
