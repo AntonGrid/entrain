@@ -669,6 +669,74 @@ function checks()
     push!(results, report_at_least("а у одного λ·dt (без γ в сумме) тот же множитель не сходится",
                                    short, 1e-4))
 
+    # У основной частоты своя скорость, и строя в ней нет: строй держит обертоны
+    # относительно неё, а её саму не держит. Значит, среда показывает два числа —
+    # 1 − γ·dt у основной и 1 − (λ+γ)·dt у промаха, — и λ есть их разность, делённая
+    # на шаг. Здесь проверяется первое: шага самой основной частоты строй не трогает,
+    # а с суммой в её скорости тот же шаг не сходится — без этого разность читалась бы
+    # по одному показанию, а не по двум.
+    worst, short = 0.0, 0.0
+    for (lam, γ) in ((16.0, 0.8), (8.8, 8.0), (15.2, 1.6)), seed in 1:6
+        m = build(modes = 3, band = 0.1, tuning = lam, damping = γ, seed = seed)
+        advance!(m, 60.0)
+        for i in 1:size(m.omega, 1)
+            w1 = m.omega[i, 1]
+            d1 = drag(m, i, 1)
+            step!(m, DT)
+            after = m.omega[i, 1]
+            alone = w1 + DT * (d1 - γ * (w1 - m.omega0[i, 1]))
+            both = w1 + DT * (d1 - (lam + γ) * (w1 - m.omega0[i, 1]))
+            worst = max(worst, abs(after - alone))
+            short = max(short, abs(after - both))
+        end
+    end
+    push!(results, report_zeros("у основной частоты своя скорость 1 − γ·dt: строй её не держит",
+                                worst, TOL_EXACT))
+    push!(results, report_at_least("а с суммой (λ+γ) в этой скорости тот же шаг не сходится",
+                                   short, 1e-4))
+
+    # И тогда λ читается по разности, а не по одному показанию: толчок в основную
+    # частоту вибрации, и в одном опыте видно обе скорости — сама она возвращается
+    # со своей, а промах, который толчок за собой тянет, спешит со своей. Читается
+    # коротким окном: дальше в разность входит связь и её общая мода, и это уже не
+    # строй (сцена `rates.jl`). Числа здесь измеренные, поэтому и допуск — не
+    # машинный: проверяется, что разность даёт написанный λ, а при λ = 0 её нет.
+    function rate_of(lam::Float64, γ::Float64, what; win::Int = 4, push::Float64 = 0.02,
+                   seeds = 1:3)
+        logs = Float64[]
+        for s in seeds
+            a = build(modes = 3, band = 0.1, tuning = lam, damping = γ, seed = s)
+            b = build(modes = 3, band = 0.1, tuning = lam, damping = γ, seed = s)
+            advance!(a, 5.0)
+            advance!(b, 5.0)
+            perturb!(b, 1, push, 1)
+            before = what(b) - what(a)
+            before == 0.0 && return NaN
+            for _ in 1:win
+                step!(a, DT)
+                step!(b, DT)
+            end
+            after = what(b) - what(a)
+            after != 0.0 || return NaN
+            push!(logs, log(abs(after / before)) / win)
+        end
+        return exp(sum(logs) / length(logs))
+    end
+    own_of(m) = m.omega[1, 1]
+    miss_of(m) = m.omega[1, 2] - 2 * m.omega[1, 1]
+    read_lam, converge = 0.0, 0.0
+    for (lam, γ) in ((16.0, 0.8), (8.8, 8.0), (15.2, 1.6))
+        read = (rate_of(lam, γ, own_of) - rate_of(lam, γ, miss_of)) / DT
+        read_lam = max(read_lam, abs(read - lam) / lam)
+    end
+    for γ in (0.8, 4.0, 8.0)
+        converge = max(converge, abs(rate_of(0.0, γ, own_of) - rate_of(0.0, γ, miss_of)))
+    end
+    push!(results, report_zeros("λ читается разностью скоростей среды: (своя − промах)/dt",
+                                read_lam, 3e-2))
+    push!(results, report_zeros("при λ = 0 обе скорости — одно число: разность ноль",
+                                converge, 1e-6))
+
     return results
 end
 
