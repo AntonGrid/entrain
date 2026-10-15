@@ -737,6 +737,70 @@ function checks()
     push!(results, report_zeros("при λ = 0 обе скорости — одно число: разность ноль",
                                 converge, 1e-6))
 
+    # Перевес (сцена `excess.jl`) — то, чем λ уносит разницу скоростей: тяга у мод
+    # разная, и мера перевеса — доля формы, одна и та же в двух картинах. Утверждений
+    # здесь три, и каждое — то, чего в сверке не было.
+    #
+    # Первое — предпосылка: тянут фазы, а не номера мод. Если бы тяга на обёртон была
+    # ровно в p раз больше тяги на основную, разности D = D_p − p·D₁ не было бы вовсе,
+    # и перевесу не с чем было бы спорить. Строка берётся там же, где её берёт сцена:
+    # в месте наибольшего промаха (там, где доля и вправду доля).
+    function miss_place(m::Medium)
+        worst, at = 0.0, (1, 1)
+        for i in 1:size(m.omega, 1), p in 2:size(m.omega, 2)
+            base = abs(m.omega[i, 1])
+            base == 0.0 && continue
+            x = abs(m.omega[i, p] - p * m.omega[i, 1]) / (p * base)
+            x > worst && ((worst, at) = (x, (i, p)))
+        end
+        return at
+    end
+    least = Inf
+    for (lam, γ) in ((16.0, 0.8), (8.8, 8.0), (15.2, 1.6), (2.0, 2.0)), seed in 1:6
+        m = build(modes = 3, band = 0.1, tuning = lam, damping = γ, seed = seed)
+        advance!(m, 60.0)
+        i, p = miss_place(m)
+        least = min(least, abs(drag(m, i, p) - p * drag(m, i, 1)))
+    end
+    push!(results, report_at_least("тянут фазы, а не номера мод: разность тяг D = D_p − p·D₁ не ноль",
+                                    least, 1e-3))
+
+    # Второе и третье — доля формы. Она читается двумя картинами: стоячей λ·r/D (силы
+    # в стоячем состоянии) и скоростной λ/(λ+γ) (доли двух скоростей среды). Это одно
+    # число только там, где написанного промаха нет: r₀ = 0 (аккорд написан точно).
+    # Разность берётся тем же местом, что и выше; допуск здесь не машинный и не схемный:
+    # невязка равновесия входит в долю делённой на D, а D на иных раскладах — десятая
+    # доля, поэтому порог вчетверо шире схемного (TOL_SCHEME).
+    function exact_chord(; seed::Int, tuning::Float64, damping::Float64)
+        m = build(modes = 3, band = 0.1, tuning = tuning, damping = damping, seed = seed)
+        for i in 1:size(m.omega0, 1), p in 2:size(m.omega0, 2)
+            m.omega0[i, p] = p * m.omega0[i, 1]
+        end
+        m.omega .= m.omega0
+        return m
+    end
+    writes = ((16.0, 0.8), (8.0, 1.0), (4.0, 4.0))
+    shared, apart = 0.0, Inf
+    for (lam, γ) in writes, seed in 1:6
+        exact = exact_chord(seed = seed, tuning = lam, damping = γ)
+        advance!(exact, 60.0)
+        i, p = miss_place(exact)
+        r = exact.omega[i, p] - p * exact.omega[i, 1]
+        d = drag(exact, i, p) - p * drag(exact, i, 1)
+        shared = max(shared, abs(lam * r / d - lam / (lam + γ)))
+
+        written = build(modes = 3, band = 0.1, tuning = lam, damping = γ, seed = seed)
+        advance!(written, 60.0)
+        i, p = miss_place(written)
+        r = written.omega[i, p] - p * written.omega[i, 1]
+        d = drag(written, i, p) - p * drag(written, i, 1)
+        apart = min(apart, abs(lam * r / d - lam / (lam + γ)))
+    end
+    push!(results, report_zeros("где написанного нет (r₀ = 0), стоячая доля λ·r/D равна скоростной λ/(λ+γ)",
+                                shared, 2e-2))
+    push!(results, report_at_least("а при написанном промахе те же две картины расходятся",
+                                   apart, 1e-3))
+
     return results
 end
 
