@@ -10,9 +10,11 @@
 # печатаются отдельно — они к версии привязаны, и это не порок: измерение и
 # должно быть привязано к тому, чем измерено.
 #
-# Сцены открытых вопросов (`modes.jl`, `boundary.jl`, `seam.jl`) читают; здесь то,
-# что из этих чтений следует из уравнений, превращено в утверждения — то же число,
-# но без броска генератора.
+# Сцены открытых вопросов (`modes.jl`, `boundary.jl`, `seam.jl`, `scales.jl`) читают;
+# здесь то, что из этих чтений следует из уравнений, превращено в утверждения — то же
+# число, но без броска генератора. Числа о среде, которые утверждением быть не могут
+# (разброс по начальным условиям), печатаются отдельно, размахом и в трёх средах:
+# свежей, прожившей без событий и прожившей с событием.
 #
 # Запуск:
 #
@@ -110,6 +112,23 @@ function echo(m::Medium, i::Int = 5; shift::Float64 = 1.5, seconds::Float64 = 6.
     advance!(m, seconds)
     advance!(quiet, seconds)
     return abs(m.omega[i, 1] - quiet.omega[i, 1])
+end
+
+"""
+    link_goal(medium, i, j)
+
+То, к чему идёт связь вибраций i и j: Σₚₙ S(ωⱼₙ−ωᵢₚ)·cos(θᵢₚ−θⱼₙ) / Σₚₙ S.
+Это ровно та цель, к которой связь сдвигается за шаг, — и по ней читается,
+какой долей пути она идёт.
+"""
+function link_goal(m::Medium, i::Int, j::Int)
+    acc, weight = 0.0, 0.0
+    for p in axes(m.omega, 2), n in axes(m.omega, 2)
+        s = overlap(m.omega[j, n] - m.omega[i, p], m.band)
+        acc += s * cos(m.theta[i, p] - m.theta[j, n])
+        weight += s
+    end
+    return weight == 0.0 ? m.coupling[i, j] : acc / weight
 end
 
 """
@@ -310,6 +329,124 @@ function checks()
             0.01,
         ),
     )
+
+    println("\nмасштаб памяти: один ε или много")
+
+    # Масштаб виден по шагу: связь идёт к своей цели долей ε·dt, и доля эта одна
+    # у всех связей уровня. В одной среде два уровня, и у каждого своя доля: у
+    # связей вибраций ε, у связей мод внутри — εᵤ. Сверяются обе доли сразу, на
+    # одном шаге одной среды, — иначе «свой масштаб у уровня» ничем не отличалось
+    # бы от «одно ε на всё».
+    worst, share_spread = 0.0, 0.0
+    for seed in 1:6
+        m = build(modes = 3, band = 0.1, inner = 0.5, inner_memory = 1e-4,
+                  memory = 3e-3, seed = seed)
+        was = copy(m.coupling)
+        inside = [copy(world(m, i).coupling) for i in 1:N]
+        step!(m, DT)
+        outer = Float64[]
+        for i in 1:N, j in 1:N
+            i == j && continue
+            d = link_goal(m, i, j) - was[i, j]
+            abs(d) < 1e-12 && continue
+            push!(outer, (m.coupling[i, j] - was[i, j]) / d)
+        end
+        inner = Float64[]
+        for i in 1:N, p in 1:3, q in 1:3
+            p == q && continue
+            d = cos(m.theta[i, p] - m.theta[i, q]) - inside[i][p, q]
+            abs(d) < 1e-12 && continue
+            push!(inner, (world(m, i).coupling[p, q] - inside[i][p, q]) / d)
+        end
+        worst = max(worst, maximum(abs.(outer .- DT * 3e-3)),
+                           maximum(abs.(inner .- DT * 1e-4)))
+        share_spread = max(share_spread, maximum(outer) - minimum(outer),
+                                         maximum(inner) - minimum(inner))
+    end
+    push!(results, report_zeros("за шаг связь идёт к своей цели долей ε·dt: у вибраций ε, у мод внутри εᵤ",
+                                worst, TOL_EXACT))
+    push!(results, report_zeros("и доля одна у всех связей уровня: масштаб у уровня один, не спектр",
+                                share_spread, TOL_EXACT))
+
+    # Прожитое пишется, только если его хватило на срок памяти: наводит связь
+    # произведение ε·прожитое, а не событие. При ε·T = 0.012 связь остаётся при
+    # своей (0.070 против начальной 0.060), при 1.2 — уходит больше половины
+    # пути (0.707…0.710; цель этой среды, её собственная согласованность, ≈ 0.70,
+    # так что путь — 0.64, а половина — 0.32). Время здесь одно и то же — 1200 с:
+    # меняется только ε, то есть срок памяти 1/ε.
+    worst, least = 0.0, Inf
+    for seed in 1:6
+        little = build(memory = 1e-5, seed = seed)
+        plenty = build(memory = 1e-3, seed = seed)
+        for _ in 1:200
+            advance!(little, 6.0)
+            advance!(plenty, 6.0)
+        end
+        worst = max(worst, abs(mean_link(little) - 0.6 / N))
+        least = min(least, mean_link(plenty) - 0.6 / N)
+    end
+    push!(results, report_zeros("пока ε·T = 0.012, связь остаётся при своей: мало прожитого — мало написано",
+                                worst, 2e-2))
+    push!(results, report_at_least("а при ε·T = 1.2 связь идёт больше половины пути: срок памяти — это 1/ε",
+                                   least, 0.3))
+
+    # Окно 1/ε решает и что останется в записи: долгая память пишет среднюю по
+    # прожитому, и она у всех сред одна (разброс 0.002…0.003), короткая пишет то,
+    # что сейчас, и оно у каждой своё (0.2…0.7). Это не «числа разные»: у одного
+    # и того же прожитого срока разные ε дают разные по природе записи.
+    widths = Float64[]
+    for ε in (1e-3, 1e-1)
+        v = Float64[]
+        for seed in 1:6
+            m = build(memory = ε, seed = seed)
+            for _ in 1:200
+                advance!(m, 6.0)
+            end
+            push!(v, mean_link(m))
+        end
+        push!(widths, maximum(v) - minimum(v))
+    end
+    push!(results, report_zeros("долгая память (1/ε = 1000 с) пишет одно на всех: разброс по средам мал",
+                                widths[1], 1e-2))
+    push!(results, report_at_least("а короткая (10 с) пишет то, что сейчас: разброс у каждой свой",
+                                   widths[2], 5e-2))
+
+    # Событие в широкую запись не входит вовсе: среда, через которую событие шло
+    # двести раз, и среда того же зерна и возраста без событий накопили одну и ту
+    # же связь (разница 0.006). Значит пишется прожитое, а событие входит в запись
+    # только через состояние — там, где окно короче прожитого.
+    worst = 0.0
+    for seed in 1:6
+        routed = build(memory = 1e-3, seed = seed)
+        quiet = build(memory = 1e-3, seed = seed)
+        for _ in 1:200
+            perturb!(routed, 1, 1.5)
+            advance!(routed, 6.0)
+            advance!(quiet, 6.0)
+        end
+        worst = max(worst, abs(mean_link(routed) - mean_link(quiet)))
+    end
+    push!(results, report_zeros("широкая память события не различает: с событием и без него связь одна",
+                                worst, 2e-2))
+
+    # И устойчивость даёт тоже прожитое: у прожившей среды отзвук одинаков по
+    # начальным условиям (разброс 0.0002…0.0006), у свежей гуляет (0.2 и больше).
+    # Утверждение не о величине отклика, а о его воспроизводимости.
+    fresh_echo, lived_echo = Float64[], Float64[]
+    for seed in 1:6
+        f = build(memory = 1e-3, seed = seed)
+        q = build(memory = 1e-3, seed = seed)
+        for _ in 1:200
+            perturb!(q, 1, 1.5)
+            advance!(q, 6.0)
+        end
+        push!(fresh_echo, echo(f))
+        push!(lived_echo, echo(q))
+    end
+    spent = maximum(fresh_echo) - minimum(fresh_echo)
+    steadied = maximum(lived_echo) - minimum(lived_echo)
+    push!(results, report_at_least("устойчивость даёт прожитое: разброс отзвука у прожившей в 10 раз уже",
+                                   spent / max(steadied, 1e-12), 10.0))
 
     println("\nсогласованность и наложение")
 
@@ -805,28 +942,47 @@ function checks()
 end
 
 """
+    mean_link(medium)
+
+Средняя связь по всем связям, кроме собственных: то, что связь накопила. У свежей
+среды это её начальные 0.6/N = 0.060 — исходная связь, а не накопленное.
+"""
+function mean_link(m::Medium)
+    s, n = 0.0, 0
+    for i in axes(m.coupling, 1), j in axes(m.coupling, 2)
+        i == j && continue
+        s += m.coupling[i, j]
+        n += 1
+    end
+    return s / n
+end
+
+"""
     measured_over(seed; passes = 200)
 
-Одно и то же событие в двух средах при одном начальном условии:
-нетронутая среда и среда, через которую событие прошло двести раз.
+Одно и то же событие в трёх средах при одном начальном условии: свежая, прожившая
+`passes` проходов без событий и прожившая те же проходы с событием. Третья нужна
+затем, что от одного лишь прожитого времени среда меняется: без неё различие
+свежей и прожившей выдавалось бы за действие события.
 
 Отдельное число здесь ничего не значит: у другого начального условия оно
 другое, и разница между версиями Julia видна именно на этих числах.
 """
 function measured_over(seed::Int; passes::Int = 200)
     fresh = build(memory = 1e-3, seed = seed)
+    quiet = build(memory = 1e-3, seed = seed)
     routed = build(memory = 1e-3, seed = seed)
     for _ in 1:passes
         perturb!(routed, 1, 1.5)
         advance!(routed, 6.0)
+        advance!(quiet, 6.0)
     end
-    a = response(fresh)
-    b = response(routed)
-    return (link = (0.6 / N, routed.coupling[1, 2]),
-            half = (a.half_time, b.half_time),
-            shape = (a.shape, b.shape),
-            residual = (a.residual, b.residual),
-            echo = (echo(build(memory = 1e-3, seed = seed)), echo(routed)))
+    a, q, b = response(fresh), response(quiet), response(routed)
+    return (link = (mean_link(fresh), mean_link(quiet), mean_link(routed)),
+            half = (a.half_time, q.half_time, b.half_time),
+            shape = (a.shape, q.shape, b.shape),
+            residual = (a.residual, q.residual, b.residual),
+            echo = (echo(build(memory = 1e-3, seed = seed)), echo(quiet), echo(routed)))
 end
 
 """
@@ -842,48 +998,58 @@ spread_of(pairs) = (minimum(first.(pairs)), maximum(last.(pairs)))
 Что меняется в поведении — числа, не утверждения. И не одно число, а размах
 по шести начальным условиям: иначе бросок генератора выдаётся за свойство
 среды. Устойчиво здесь то, что не перекрывается при смене начальных условий.
+
+Среды три, и различаются они по-разному: свежая и прожившая без событий —
+прожитым временем, прожившая без событий и с руслом — событием. Без третьего
+столбца событию приписывалось бы то, что делает прожитое.
 """
 function behaviour()
     println("\nчто меняется в поведении (числа, не утверждения)")
     println("  шесть начальных условий; в скобках — наименьшее … наибольшее")
+    println("  свежая — не прожившая ничего; без событий — прожившая столько же без")
+    println("  событий; с руслом — прожившая те же проходы с событием")
 
     rows = [measured_over(seed) for seed in 1:6]
 
-    for (name, field, unit) in (("связь[1,2]", :link, ""),
+    for (name, field, unit) in (("связь средняя", :link, ""),
                                 ("половина пути", :half, " с"),
                                 ("отличие от затухания", :shape, ""),
                                 ("остаток после возврата", :residual, ""),
                                 ("отзвук в 5-й вибрации", :echo, ""))
-        fro = spread_of([getfield(r, field)[1] for r in rows])
-        rou = spread_of([getfield(r, field)[2] for r in rows])
-        fro_lo, fro_hi = first(fro), last(fro)
-        rou_lo, rou_hi = first(rou), last(rou)
-        crossed = !(fro_hi < rou_lo || rou_hi < fro_lo)
-        @printf("  %-23s нетронутая %.4f … %.4f   с руслом %.4f … %.4f%s\n",
-                name, fro_lo, fro_hi, rou_lo, rou_hi, unit)
-        spent, steadied = fro_hi - fro_lo, rou_hi - rou_lo
-        @printf("  %-23s разброс %.4f против %.4f; диапазоны %s\n", "",
-                spent, steadied, crossed ? "перекрываются" : "не пересекаются")
-        # Ширина отклика — то, что держится и по начальным условиям, и по версии:
-        # величина может совпасть, а воспроизводимость — нет. Подпись говорит
-        # только то, что видно в числах: сужение есть там, где мера и есть
-        # отклик, отобранный памятью (отзвук); у прочих мер его нет.
-        if steadied == 0.0
-            println("  "^23 * "разброс отклика: стоит на месте (с руслом)")
+        cols = [spread_of([getfield(r, field)[k] for r in rows]) for k in 1:3]
+        @printf("  %-22s свежая %.4f … %.4f%s\n", name, cols[1]..., unit)
+        @printf("  %-22s без событий %.4f … %.4f%s\n", "", cols[2]..., unit)
+        @printf("  %-22s с руслом %.4f … %.4f%s\n", "", cols[3]..., unit)
+        spent, quiet_w, rout_w = ((c[2] - c[1]) for c in cols)
+        @printf("  %-22s разброс %.4f / %.4f / %.4f (свежая / без событий / с руслом)\n",
+                "", spent, quiet_w, rout_w)
+        # Диапазоны прожившей без событий и с руслом: перекрытие значит, что
+        # событие в этой мере ничего не добавляет к прожитому.
+        same = !(cols[2][2] < cols[3][1] || cols[3][2] < cols[2][1])
+        println("  "^22 * (same ? "прожившая без событий и с руслом: диапазоны перекрываются"
+                            : "прожившая без событий и с руслом: диапазоны разошлись"))
+        # Сужение разброса — то, что держится и по начальным условиям, и по
+        # версии. Печатается только там, где сравниваются сопоставимые меры:
+        # свежая и прожившая без событий отличаются прожитым, а не событием.
+        if quiet_w == 0.0
+            println("  "^22 * "сужения нет: прожившая без событий не гуляет (разброс 0.0000)")
         elseif spent == 0.0
-            println("  "^23 * "сужения нет: нетронутая мера не гуляет (разброс 0.0000)")
-        elseif spent >= 2 * steadied
-            @printf("  %-23s сужение есть: разброс уже в %.0f раз (с руслом)\n", "", spent / steadied)
+            println("  "^22 * "сужения нет: свежая мера не гуляет (разброс 0.0000)")
+        elseif spent >= 2 * quiet_w
+            @printf("  %-22s сужение есть: разброс уже в %.0f раз — его даёт прожитое\n",
+                    "", spent / quiet_w)
         else
-            @printf("  %-23s сужения нет: разброс отклика %.2f нетронутого (с руслом)\n", "",
-                    steadied / spent)
+            @printf("  %-22s сужения нет: разброс прожившей %.2f нетронутого\n", "",
+                    quiet_w / spent)
         end
     end
     println("  Перекрытие диапазонов значит, что различие сред не держится при")
     println("  смене начальных условий: такое число — бросок, а не свойство.")
+    println("  Где прожившая без событий и прожившая с руслом сходятся, различие")
+    println("  относится к прожитому, а не к событию: событие входит в запись")
+    println("  только через состояние, а память пишет прожитое.")
     println("  Сужение разброса держится и по начальным условиям, и по версии там,")
-    println("  где мера и есть отклик, отобранный памятью, — в отзвуке: след —")
-    println("  не остаток, а устойчивость.")
+    println("  где мера и есть отклик, отобранный памятью, — в отзвуке.")
     return nothing
 end
 
