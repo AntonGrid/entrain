@@ -24,6 +24,7 @@ include(joinpath(@__DIR__, "basic.jl"))
 
 const TOL_EXACT = 1e-9     # численная сумма: сходится к нулю
 const TOL_SCHEME = 5e-3    # точность схемы первого порядка
+const WRITTEN = 1e-2       # написанный процент по имени: то, чем среда написана
 
 """
     report_zeros(name, error, tol)
@@ -1169,6 +1170,103 @@ function checks()
                                 shared, 2e-2))
     push!(results, report_at_least("а при написанном промахе те же две картины расходятся",
                                    apart, 1e-3))
+
+    # И последнее место того же вопроса — само написанное: откуда берётся промах r₀, а
+    # с ним и то, почему λ конечна (сцена `written.jl`). Здесь из этого четыре места.
+    #
+    # Первое: написанное не переписывается. Прожитое — события, память, ε у каждой
+    # связи — меняет связи и не трогает своих частот ни на бит. Ноль здесь ровно ноль,
+    # а не «почти»: этим и сказано, что r₀ не память и не след, а то, чем среда
+    # написана. Второе утверждение — контроль: есть чему не переписаться, связи за
+    # жизнь меняются.
+    ε = fill(1e-3, N, N)
+    ε[1, 2], ε[1, 3] = 1e-2, 1e-4
+    rewrite, least_link = 0.0, Inf
+    for seed in 1:6
+        m = build(modes = 3, band = 0.1, memory_matrix = ε, seed = seed)
+        was0, was_c = copy(m.omega0), copy(m.coupling)
+        for _ in 1:200
+            perturb!(m, 1, 1.5)
+            advance!(m, 6.0)
+        end
+        rewrite = max(rewrite, maximum(abs.(m.omega0 .- was0)))
+        least_link = min(least_link, maximum(abs.(m.coupling .- was_c)))
+    end
+    push!(results, report_zeros("написанное не переписывается: прожитое меняет связи, а свои частоты — нет",
+                                rewrite, TOL_EXACT))
+    push!(results, report_at_least("и не переписать его нечем: связи за прожитое меняются",
+                                   least_link, 1e-2))
+
+    # Третье и четвёртое — нужная λ и шаг. Аккорд написан заново, ровно 1 %: тогда
+    # требование «промах не хуже написанного» — это доля 0.01, и λ_min = F/s − γ, где
+    # F — тяга в долях отношения (то же число, что читает `tension.jl`). Проверяется
+    # поведением с двух сторон: при половине нужной жёсткости написанное не держится,
+    # при удвоенной — держится с запасом. Затем то же число читается шагом: промах не
+    # сходит ниже F·dt/2 (потолок (λ+γ)·dt < 2 с другой стороны), и потому одно и то
+    # же написанное 1 % при шаге 0.02 держится, а при 0.1 — нет. Счёт по зёрнам, а не
+    # «наибольшее»: у одного зерна промах гуляет по времени и равновесия не ловит —
+    # это уже читано (`rates.jl`, `excess.jl`), и превращать это в порог не стоит.
+    function written_chord(; seed::Int, tuning::Float64)
+        m = build(modes = 3, band = 0.1, link = 0.6, tuning = tuning, damping = 0.8,
+                  memory = 1e-3, seed = seed)
+        for i in 1:size(m.omega0, 1), p in 2:size(m.omega0, 2)
+            m.omega0[i, p] = p * m.omega[i, 1] * (1 + WRITTEN)
+        end
+        m.omega .= m.omega0
+        return m
+    end
+    function share_of_miss(m::Medium)
+        worst = 0.0
+        for i in 1:size(m.omega, 1), p in 2:size(m.omega, 2)
+            base = abs(m.omega[i, 1])
+            base == 0.0 && continue
+            worst = max(worst, abs(m.omega[i, p] - p * m.omega[i, 1]) / (p * base))
+        end
+        return worst
+    end
+    function force_over(m::Medium)
+        worst = 0.0
+        for i in 1:size(m.omega, 1), p in 2:size(m.omega, 2)
+            base = abs(m.omega[i, 1])
+            base == 0.0 && continue
+            r0 = m.omega0[i, p] - p * m.omega0[i, 1]
+            worst = max(worst,
+                        abs(drag(m, i, p) + m.damping * r0 - p * drag(m, i, 1)) / (p * base))
+        end
+        return worst
+    end
+    "Наименьшая жёсткость, при которой промах не хуже написанного: λ = F/s − γ."
+    need_lambda(m::Medium) = force_over(m) / WRITTEN - m.damping
+    function run_written(m::Medium, dt::Float64, seconds::Float64 = 60.0)
+        for _ in 1:round(Int, seconds / dt)
+            step!(m, dt)
+        end
+        return m
+    end
+    least_over, least_margin = Inf, Inf
+    held_fine, held_coarse = 0, 0
+    for seed in 1:6
+        base = run_written(written_chord(seed = seed, tuning = 64.0), DT)
+        lam = need_lambda(base)
+        least_over = min(least_over,
+                         share_of_miss(run_written(written_chord(seed = seed, tuning = lam / 2), DT)) / WRITTEN)
+        least_margin = min(least_margin,
+                           WRITTEN / share_of_miss(run_written(written_chord(seed = seed, tuning = 2 * lam), DT)))
+        fine = run_written(written_chord(seed = seed, tuning = 2 / 0.02 - 0.8 - 0.5), 0.02)
+        coarse = run_written(written_chord(seed = seed, tuning = 2 / 0.1 - 0.8 - 0.5), 0.1)
+        held_fine += share_of_miss(fine) <= WRITTEN
+        held_coarse += share_of_miss(coarse) <= WRITTEN
+    end
+    push!(results, report_at_least("при половине нужной жёсткости написанное не держится: промах выше во столько раз",
+                                   least_over, 1.1))
+    push!(results, report_at_least("а при удвоенной — держится: промах ниже написанного во столько раз",
+                                   least_margin, 1.5))
+    @printf("  %-56s %-11s %d из 6\n", "при шаге 0.02 написанное 1 % держится у зёрен",
+            held_fine >= 4 ? "сошлось" : "НЕ СОШЛОСЬ", held_fine)
+    push!(results, held_fine >= 4)
+    @printf("  %-56s %-11s %d из 6\n", "а при шаге 0.1 — держится не больше чем у одного",
+            held_coarse <= 1 ? "сошлось" : "НЕ СОШЛОСЬ", held_coarse)
+    push!(results, held_coarse <= 1)
 
     return results
 end
