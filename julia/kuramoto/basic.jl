@@ -13,21 +13,29 @@
 #                 отзывается на многое, узкая — только на совпадающее
 #     строй     — жёсткость аккорда: держит обертоны в их отношении
 #     затухание — возвращение к своим частотам
-#     память    — деформация связи тем, что совпало (русло) — и внутри тоже
+#     память    — деформация связи тем, что совпало (русло) — и внутри тоже;
+#                 срок памяти 1/ε у каждой связи свой (εᵢⱼ), а не один на уровень
 #
 #     θ̇ᵢₘ = ωᵢₘ + Σⱼₙ Wᵢⱼ S(ωⱼₙ − ωᵢₘ) sin(θⱼₙ − θᵢₘ)
 #                 + Σ_q Uᵢₘq S(ωᵢ_q − ωᵢₘ) sin(θᵢ_q − θᵢₘ)
 #     ω̇ᵢₘ = Σⱼₙ Wᵢⱼ S(ωⱼₙ − ωᵢₘ) sin(θⱼₙ − θᵢₘ)
 #                 + Σ_q Uᵢₘq S(ωᵢ_q − ωᵢₘ) sin(θᵢ_q − θᵢₘ)
 #                 − λ (ωᵢₘ − m ωᵢ₁) − γ (ωᵢₘ − ω₀ᵢₘ)
-#     Ẇᵢⱼ = ε ( Σₚₙ S cos(θᵢₚ − θⱼₙ) / Σₚₙ S − Wᵢⱼ )
-#     U̇ᵢₘq = εᵤ ( cos(θᵢₘ − θᵢ_q) − Uᵢₘq )    — у каждой вибрации своё русло
+#     Ẇᵢⱼ = εᵢⱼ ( Σₚₙ S cos(θᵢₚ − θⱼₙ) / Σₚₙ S − Wᵢⱼ )
+#     U̇ᵢₘq = εᵤᵢₘq ( cos(θᵢₘ − θᵢ_q) − Uᵢₘq )    — у каждой вибрации своё русло
 #     S(Δ) = 1 / (1 + (Δ/Π)²)
 #
 # При одной моде на вибрацию и Π = ∞ это в точности прежние уравнения:
 # у вибрации была одна частота, отклик не зависел от совпадения.
 # Внутренняя связь Uᵢ видна, только когда мод больше одной; при Uᵢ = 0
 # прежнее чтение не меняется ни на число.
+#
+# εᵢⱼ — срок памяти связи, а не уровня: у каждой связи он свой, поэтому
+# «мгновенное» и «годовое» стоят рядом в одной среде и не спорят. Задаётся
+# раскладкой (`memory_matrix`); когда раскладки нет, у уровня одно ε
+# (`memory`) и запись прежняя до последнего бита — раскладка не второе число,
+# а то же самое, разложенное по связям. То же у мира внутри вибрации
+# (`inner_memory_matrix`).
 #
 # Было приближение: связь внутри вибрации одна на все вибрации сразу, и наводилась
 # она тем, что совпало у них у всех. Здесь она у каждой своя — среда внутри
@@ -63,6 +71,12 @@ const DT = 0.01     # шаг описания, с
               среда не перебивает. У вибрации без мира (одна мода) строя нет:
               держать нечего. Проверено чтением «где живёт строй» в `modes.jl`;
 - `memory`   — ε: как быстро связь деформируется тем, что через неё прошло;
+- `memory_matrix` — ε у каждой связи: `memory_matrix[i, j]` — срок памяти связи
+              (i, j) свой. `nothing` — у всего уровня одно ε, и тогда запись
+              прежняя ни на число: в шаге то же сложение, меняется только то,
+              откуда взят множитель. Так «мгновенное» и «годовое» могут стоять
+              рядом в одной среде, а написанное — пережить окно у той связи,
+              у которой срок длиннее (чтение «срок у связи» в `terms.jl`);
 - `damping`  — γ: как быстро частоты возвращаются к своим;
 - `inside`   — миры внутри вибраций: `inside[i]` — среда мод вибрации i, со
               своими связью, полосой, строем, памятью и затуханием; `nothing` —
@@ -82,6 +96,7 @@ mutable struct Medium{A<:AbstractMatrix{Float64}, B<:AbstractMatrix{Float64},
     band::Float64
     tuning::Float64
     memory::Float64
+    memory_matrix::Union{Nothing, Matrix{Float64}}
     damping::Float64
     inside::Union{Nothing, Vector{Medium}}
 
@@ -90,14 +105,21 @@ mutable struct Medium{A<:AbstractMatrix{Float64}, B<:AbstractMatrix{Float64},
                       theta::AbstractMatrix{Float64},
                       coupling::AbstractMatrix{Float64},
                       band::Float64 = Inf, tuning::Float64 = 0.0,
-                      memory::Float64 = 0.0, damping::Float64 = 0.8,
+                      memory::Float64 = 0.0,
+                      memory_matrix::Union{Nothing, AbstractMatrix{Float64}} = nothing,
+                      damping::Float64 = 0.8,
                       inside::Union{Nothing, Vector{Medium}} = nothing)
         size(omega0) == size(omega) == size(theta) ||
             throw(ArgumentError("состояние — одна раскладка: вибрации × моды"))
         size(coupling) == (size(omega, 1), size(omega, 1)) ||
             throw(ArgumentError("связь — между вибрациями: по числу вибраций"))
+        memory_matrix === nothing ||
+            size(memory_matrix) == size(coupling) ||
+            throw(ArgumentError("раскладка памяти — по связям: вибрации × вибрации"))
         return new{typeof(omega0), typeof(omega), typeof(theta), typeof(coupling)}(
-            omega0, omega, theta, coupling, band, tuning, memory, damping, inside)
+            omega0, omega, theta, coupling, band, tuning, memory,
+            memory_matrix === nothing ? nothing : Matrix{Float64}(memory_matrix),
+            damping, inside)
     end
 end
 
@@ -110,6 +132,24 @@ end
 world(m::Medium, i::Int) = m.inside === nothing ? nothing : m.inside[i]
 
 """
+    link_memory(medium, i, j)
+
+ε связи вибраций i и j: у каждой связи своё, если среда собрана с раскладкой
+(`memory_matrix`); если раскладки нет — у всего уровня одно ε (`memory`).
+"""
+link_memory(m::Medium, i::Int, j::Int) =
+    m.memory_matrix === nothing ? m.memory : m.memory_matrix[i, j]
+
+"""
+    has_memory(medium)
+
+Есть ли у среды память: ноль значит, что связи не пишутся вовсе, и шаг памяти
+пропускается — так же, как прежде при одном ε = 0.
+"""
+has_memory(m::Medium) = m.memory_matrix === nothing ? m.memory != 0.0 :
+                        any(ε -> ε != 0.0, m.memory_matrix)
+
+"""
     inside!(medium; coupling, band, memory, tuning, damping)
 
 Дать каждой вибрации свой мир: та же среда, взятая близко. Вибрации мира — моды
@@ -119,20 +159,30 @@ world(m::Medium, i::Int) = m.inside === nothing ? nothing : m.inside[i]
 По умолчанию мир берёт у среды снаружи полосу, строй и затухание, а память у
 него своя и её нет (εᵤ = 0): тогда мир ничего не добавляет к уже сказанному, и
 числа не двигаются.
+
+Память у мира устроена как у среды снаружи: `memory` — одно εᵤ на все связи мод,
+`memory_matrix` — εᵤ у каждой пары мод своё (`nothing` — одно на все).
 """
 function inside!(m::Medium; coupling::AbstractMatrix{Float64},
                   band::Float64 = m.band, memory::Float64 = 0.0,
+                  memory_matrix::Union{Nothing, AbstractMatrix{Float64}} = nothing,
                   tuning::Float64 = m.tuning, damping::Float64 = m.damping)
     modes = size(m.omega, 2)
     size(coupling) == (modes, modes) ||
         throw(ArgumentError("связь внутри вибрации — между её модами"))
+    memory_matrix === nothing ||
+        size(memory_matrix) == (modes, modes) ||
+        throw(ArgumentError("раскладка памяти мира — по связям мод: моды × моды"))
     worlds = Vector{Medium}(undef, size(m.omega, 1))
     for i in eachindex(worlds)
         worlds[i] = Medium(omega0 = reshape(view(m.omega0, i, :), modes, 1),
                            omega = reshape(view(m.omega, i, :), modes, 1),
                            theta = reshape(view(m.theta, i, :), modes, 1),
                            coupling = copy(coupling), band = band,
-                           tuning = tuning, memory = memory, damping = damping)
+                           tuning = tuning, memory = memory,
+                           memory_matrix = memory_matrix === nothing ? nothing :
+                                           copy(memory_matrix),
+                           damping = damping)
     end
     m.inside = worlds
     return m
@@ -170,7 +220,8 @@ end
 
 След внутри вибрации: связь в мире наводится тем, что через неё прошло, — как и
 связь между вибрациями, только у каждой вибрации это своё. Совпало — потому что
-через эту пару мод прошло именно это.
+через эту пару мод прошло именно это. Срок памяти у каждой пары мод свой
+(`link_memory`), как и у каждой связи между вибрациями.
 """
 function inner_trace!(w::Medium, dt::Float64)
     vibs = size(w.omega, 1)
@@ -179,7 +230,7 @@ function inner_trace!(w::Medium, dt::Float64)
         s = overlap(w.omega[q, 1] - w.omega[p, 1], w.band)
         s == 0.0 && continue
         target = cos(w.theta[p, 1] - w.theta[q, 1])
-        w.coupling[p, q] += dt * w.memory * (target - w.coupling[p, q])
+        w.coupling[p, q] += dt * link_memory(w, p, q) * (target - w.coupling[p, q])
     end
     return w
 end
@@ -227,7 +278,7 @@ function step!(m::Medium, dt::Float64)
     end
     m.omega .+= dt .* drive
     m.theta .+= dt .* m.omega
-    if m.memory != 0.0
+    if has_memory(m)
         for i in 1:vibs, j in 1:vibs
             i == j && continue
             acc, weight = 0.0, 0.0
@@ -237,12 +288,12 @@ function step!(m::Medium, dt::Float64)
                 weight += s
             end
             target = weight == 0.0 ? m.coupling[i, j] : acc / weight
-            m.coupling[i, j] += dt * m.memory * (target - m.coupling[i, j])
+            m.coupling[i, j] += dt * link_memory(m, i, j) * (target - m.coupling[i, j])
         end
     end
     for i in 1:vibs
         w = world(m, i)
-        (w === nothing || w.memory == 0.0 || all(iszero, w.coupling)) && continue
+        (w === nothing || !has_memory(w) || all(iszero, w.coupling)) && continue
         inner_trace!(w, dt)
     end
     return m
@@ -409,8 +460,10 @@ drift(m::Medium, i::Int, p::Int = 1) = abs(m.omega[i, p] - m.omega0[i, p])
 """
 function build(; modes::Int = 1, link::Float64 = 0.6, band::Float64 = Inf,
                  tuning::Float64 = 0.0, memory::Float64 = 1e-3,
+                 memory_matrix::Union{Nothing,AbstractMatrix{Float64}} = nothing,
                  inner::Float64 = 0.0, inner_memory::Float64 = 0.0,
                  inner_matrix::Union{Nothing,Matrix{Float64}} = nothing,
+                 inner_memory_matrix::Union{Nothing,AbstractMatrix{Float64}} = nothing,
                  damping::Float64 = 0.8, seed::Int = 4)
     modes >= 1 || throw(ArgumentError("у вибрации хотя бы одна частота"))
     rng = MersenneTwister(seed)
@@ -428,8 +481,10 @@ function build(; modes::Int = 1, link::Float64 = 0.6, band::Float64 = Inf,
         U[p, p] = 0.0                              # мода не тянет саму себя
     end
     m = Medium(omega0 = omega0, theta = theta, coupling = fill(link / N, N, N),
-               band = band, tuning = tuning, memory = memory, damping = damping)
-    modes > 1 && inside!(m, coupling = U, memory = inner_memory)
+               band = band, tuning = tuning, memory = memory,
+               memory_matrix = memory_matrix, damping = damping)
+    modes > 1 && inside!(m, coupling = U, memory = inner_memory,
+                         memory_matrix = inner_memory_matrix)
     return m
 end
 

@@ -10,7 +10,7 @@
 # печатаются отдельно — они к версии привязаны, и это не порок: измерение и
 # должно быть привязано к тому, чем измерено.
 #
-# Сцены открытых вопросов (`modes.jl`, `boundary.jl`, `seam.jl`, `scales.jl`, `relief.jl`) читают;
+# Сцены открытых вопросов (`modes.jl`, `boundary.jl`, `seam.jl`, `scales.jl`, `relief.jl`, `terms.jl`) читают;
 # здесь то, что из этих чтений следует из уравнений, превращено в утверждения — то же
 # число, но без броска генератора. Числа о среде, которые утверждением быть не могут
 # (разброс по начальным условиям), печатаются отдельно, размахом и в трёх средах:
@@ -367,6 +367,8 @@ function checks()
                                 worst, TOL_EXACT))
     push!(results, report_zeros("и доля одна у всех связей уровня: масштаб у уровня один, не спектр",
                                 share_spread, TOL_EXACT))
+    # Это — пока ε у уровня одно. Раскладка ε по связям (глава 22, «срок у связи»)
+    # ниже: там доля у каждой связи своя, а при одном ε у всех запись прежняя.
 
     # Прожитое пишется, только если его хватило на срок памяти: наводит связь
     # произведение ε·прожитое, а не событие. При ε·T = 0.012 связь остаётся при
@@ -548,6 +550,135 @@ function checks()
     end
     push!(results, report_zeros("рельеф тает по сроку памяти: за 1200 с тишины — в e^(ε·1200) раз",
                                 worst_fade, 2e-2))
+
+    println("\nсрок у связи: ε не у уровня, а у каждой связи")
+
+    # Шаг записи, названный в главе 22 дважды — в масштабах памяти (чтобы рядом
+    # стояли мгновенное и годовое) и в месте (чтобы написанное пережило окно), —
+    # стал записью: ε у связи (`memory_matrix`), а не у уровня. Утверждений шесть.
+    #
+    # Первое — что это не вторая запись. Раскладка ε с одним и тем же числом у всех
+    # связей даёт те же числа, что ε уровня, — и не «почти», а ровно: в шаге то же
+    # сложение, меняется только то, откуда взят множитель. Поэтому порог здесь не
+    # машинный, а нуль: строка говорит «то же число», а не «близкое».
+    wrong_split = 0.0
+    for ε in (1e-5, 1e-3, 1e-2), seed in 1:2
+        level = build(memory = ε, seed = seed)
+        split = build(memory = ε, memory_matrix = fill(ε, N, N), seed = seed)
+        advance!(level, 300.0)
+        advance!(split, 300.0)
+        wrong_split = max(wrong_split, maximum(abs.(level.omega .- split.omega)),
+                          maximum(abs.(level.theta .- split.theta)),
+                          maximum(abs.(level.coupling .- split.coupling)))
+    end
+    push!(results, report_zeros("ε одно у всех связей ⟹ раскладка по связям даёт те же числа",
+                                wrong_split, 0.0))
+
+    # Второе — то же на меньшем масштабе: мир внутри вибрации есть та же среда, и
+    # раскладка у него устроена так же. Мир здесь с ненулевой связью (`inner ≠ 0`):
+    # иначе в него нечему было бы войти и строка ничего не говорила бы.
+    wrong_inner = 0.0
+    for εᵤ in (1e-5, 1e-4), seed in 1:2
+        level = build(modes = 3, band = 0.1, tuning = 8.0, inner = 0.5,
+                      inner_memory = εᵤ, seed = seed)
+        split = build(modes = 3, band = 0.1, tuning = 8.0, inner = 0.5,
+                      inner_memory = εᵤ, inner_memory_matrix = fill(εᵤ, 3, 3), seed = seed)
+        advance!(level, 300.0)
+        advance!(split, 300.0)
+        wrong_inner = max(wrong_inner, maximum(abs.(level.omega .- split.omega)),
+                          maximum(abs.(level.theta .- split.theta)))
+        for i in 1:N
+            wrong_inner = max(wrong_inner, maximum(abs.(world(level, i).coupling .-
+                                                        world(split, i).coupling)))
+        end
+    end
+    push!(results, report_zeros("и у мира внутри вибрации: εᵤ одно у всех пар мод ⟹ те же числа",
+                                wrong_inner, 0.0))
+
+    # Третье — доля пути у связи своя и равна её ε·dt. Выше (у «доли пути») та же
+    # доля сверялась как одна на уровень; здесь ε у связей одного состояния разные,
+    # и берётся доля из самой раскладки, а не из числа уровня.
+    split_share = 0.0
+    for seed in 1:6
+        ε = fill(1e-3, N, N)
+        ε[1, 2], ε[1, 3] = 1e-2, 1e-4
+        m = build(memory_matrix = ε, seed = seed)
+        was = copy(m.coupling)
+        step!(m, DT)
+        for i in 1:N, j in 1:N
+            i == j && continue
+            d = link_goal(m, i, j) - was[i, j]
+            abs(d) < 1e-12 && continue
+            split_share = max(split_share,
+                              abs((m.coupling[i, j] - was[i, j]) / d - DT * ε[i, j]))
+        end
+    end
+    push!(results, report_zeros("за шаг связь идёт к цели долей своего ε·dt — у каждой связи своё",
+                                split_share, TOL_EXACT))
+
+    # Четвёртое — рядом в одной среде два срока: быстрая связь (ε = 1e-2, 1/ε = 100 с)
+    # уходит к своей цели, медленная (ε = 1e-4, 1/ε = 10000 с) остаётся при своей.
+    # Мера — накопленное за одно и то же прожитое время (1200 с) с одного состояния.
+    # Порог объявлен до прогона и низкий нарочно: связь пишет долю пути, а не ε,
+    # поэтому различается записанное не в сто раз (в сто раз различались бы доли).
+    # В сцене `terms.jl` прочитано 8.9…9.6, в сверке по худшему из шести зёрен — 9.0:
+    # быстрая связь прошла свою цель целиком (ε·T = 12), а медленная — восьмую часть
+    # своей (ε·T = 0.12). Порог взят вдвое ниже прочитанного и говорит только, что
+    # записанное у двух связей одного места разное.
+    function with_terms(ε::Matrix{Float64}, passes::Int, seed::Int; place::Int = 0)
+        m = build(memory_matrix = ε, seed = seed)
+        for _ in 1:passes
+            place != 0 && perturb!(m, place, 1.5)
+            advance!(m, 6.0)
+        end
+        return m
+    end
+    terms_matrix() = (ε = fill(1e-3, N, N); ε[1, 2] = 1e-2; ε[1, 3] = 1e-4; ε)
+    least_written = Inf
+    for seed in 1:6
+        ε = terms_matrix()
+        keep = build(memory_matrix = ε, seed = seed)
+        start = copy(keep.coupling)
+        for _ in 1:200
+            perturb!(keep, 1, 1.5)
+            advance!(keep, 6.0)
+        end
+        least_written = min(least_written, abs(keep.coupling[1, 2] - start[1, 2]) /
+                                            abs(keep.coupling[1, 3] - start[1, 3]))
+    end
+    push!(results, report_at_least("две связи одного места помнят разное: за то же время записано больше",
+                                   least_written, 5.0))
+
+    # Пятое и шестое — то, ради чего шаг назван при чтении места: написанное
+    # переживает окно, если ε у связи. Место одно (первая вибрация), сроки у двух
+    # его связей разные. Мера — отличие от среды того же зерна и возраста без
+    # событий, до тишины и после 1200 с тишины. Ждётся e^(-ε·T): 0.887 у медленной
+    # связи и 6.1e-6 у быстрой. Порогов два, оба объявлены до прогона. Первый —
+    # половина написанного: в сцене `terms.jl` у медленной связи прочитано 0.887 у
+    # всех шести зёрен, от теоретического e^(-0.12) = 0.887 отступ в третьем знаке.
+    # Второй — «во много раз меньше»: остаток у быстрой связи гуляет по зёрнам от
+    # 5.7e-6 до 4.5e-4, поэтому порог на него был бы не утверждением, а броском.
+    # Держится он не сам: у одного места связь стоит не одна, и через общее
+    # состояние остаток быстрой связи поддерживает медленная. Поэтому шестая
+    # строка говорит не «остаток у быстрой мал», а «у медленной остаётся больше во
+    # столько раз» — прочитано около двух тысяч, порог взят в десять.
+    least_slow, least_gap = Inf, Inf
+    for seed in 1:6
+        ε = terms_matrix()
+        routed = with_terms(ε, 200, seed; place = 1)
+        quiet = with_terms(ε, 200, seed)
+        before = relief_of(routed, quiet)
+        advance!(routed, 1200.0)
+        after = relief_of(routed, with_terms(ε, 400, seed))
+        kept_slow = abs(after[1, 3]) / abs(before[1, 3])
+        kept_fast = abs(after[1, 2]) / abs(before[1, 2])
+        least_slow = min(least_slow, kept_slow)
+        least_gap = min(least_gap, kept_slow / kept_fast)
+    end
+    push!(results, report_at_least("написанное переживает окно у медленной связи: остаётся не меньше",
+                                   least_slow, 0.5))
+    push!(results, report_at_least("а у быстрой уходит скорее: у медленной остаётся больше во столько раз",
+                                   least_gap, 10.0))
 
     println("\nсогласованность и наложение")
 
