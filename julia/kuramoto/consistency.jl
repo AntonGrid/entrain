@@ -10,7 +10,7 @@
 # печатаются отдельно — они к версии привязаны, и это не порок: измерение и
 # должно быть привязано к тому, чем измерено.
 #
-# Сцены открытых вопросов (`modes.jl`, `boundary.jl`, `seam.jl`, `scales.jl`) читают;
+# Сцены открытых вопросов (`modes.jl`, `boundary.jl`, `seam.jl`, `scales.jl`, `relief.jl`) читают;
 # здесь то, что из этих чтений следует из уравнений, превращено в утверждения — то же
 # число, но без броска генератора. Числа о среде, которые утверждением быть не могут
 # (разброс по начальным условиям), печатаются отдельно, размахом и в трёх средах:
@@ -447,6 +447,107 @@ function checks()
     steadied = maximum(lived_echo) - minimum(lived_echo)
     push!(results, report_at_least("устойчивость даёт прожитое: разброс отзвука у прожившей в 10 раз уже",
                                    spent / max(steadied, 1e-12), 10.0))
+
+    println("\nместо записи: что помнит связь, кроме времени")
+
+    # Доля пути у всех связей уровня одна, а цель у каждой своя — потому из одной
+    # доли выходит разная запись. Утверждений три, и они о разном: доля — одно
+    # число на уровень, цели — разные у связей одного состояния, записанное —
+    # разные у связей того же состояния. Без второго и третьего первое читалось бы
+    # как «все связи пишут одинаково», а это неверно (сцена `relief.jl`).
+    # Порог у третьей строки — пол, а не прочитанное: она говорит только, что
+    # запись за шаг не одна, поэтому и порог низкий (измеренное в наименьшем зерне
+    # 1.18, на другой версии 1.33).
+    share_err, goal_spread, write_ratio = 0.0, Inf, Inf
+    for seed in 1:6
+        m = build(memory = 1e-3, seed = seed)
+        was = copy(m.coupling)
+        step!(m, DT)
+        goals, written = Float64[], Float64[]
+        for i in 1:N, j in 1:N
+            i == j && continue
+            push!(goals, link_goal(m, i, j))
+            push!(written, abs(m.coupling[i, j] - was[i, j]))
+            d = link_goal(m, i, j) - was[i, j]
+            abs(d) < 1e-12 && continue
+            share_err = max(share_err, abs((m.coupling[i, j] - was[i, j]) / d - DT * 1e-3))
+        end
+        goal_spread = min(goal_spread, maximum(goals) - minimum(goals))
+        write_ratio = min(write_ratio, maximum(written) / median(written))
+    end
+    push!(results, report_zeros("за шаг связь идёт к цели долей ε·dt — и у всех связей доля одна",
+                                share_err, TOL_EXACT))
+    push!(results, report_at_least("а цели связей одного состояния разные: разброс целей не меньше",
+                                   goal_spread, 1.5))
+    push!(results, report_at_least("и записанное за шаг не одно: наибольшая связь пишет больше середины",
+                                   write_ratio, 1.05))
+
+    # Место записывается: связь, которой событие касается, отличается от связи
+    # того же зерна и возраста, прожившей без событий, сильнее, чем связь вдали от
+    # места. Проверяется на двух местах сразу: если бы рельеф стоял где придётся, у
+    # второго места он стоял бы не там, где событие шло. Порог — не машинный и не
+    # схемный: это измеренная величина, и у мест она разная (у 1-й вибрации 21.5 в
+    # худшем зерне, у 5-й — 7.1: место записано и там, но слабее — сказано как
+    # прочитано, сцены `relief.jl`).
+    function lived(ε::Float64, passes::Int, seed::Int; place::Int = 0)
+        m = build(memory = ε, seed = seed)
+        for _ in 1:passes
+            place != 0 && perturb!(m, place, 1.5)
+            advance!(m, 6.0)
+        end
+        return m
+    end
+    place1, place5 = Inf, Inf
+    wide_reliefs = Matrix{Float64}[]
+    for seed in 1:6
+        quiet = lived(1e-3, 200, seed)
+        to1 = relief_of(lived(1e-3, 200, seed; place = 1), quiet)
+        to5 = relief_of(lived(1e-3, 200, seed; place = 5), quiet)
+        push!(wide_reliefs, to1)
+        n1, f1 = relief_place(to1, 1)
+        n5, f5 = relief_place(to5, 5)
+        place1 = min(place1, n1 / f1)
+        place5 = min(place5, n5 / f5)
+    end
+    push!(results, report_at_least("место записано: у 1-й вибрации отличие больше, чем вдали от неё",
+                                   place1, 5.0))
+    push!(results, report_at_least("и у 5-й тоже: событие шло там — там и рельеф",
+                                   place5, 5.0))
+
+    # Чей это рельеф: долгая память пишет среднее по прожитому, и рельеф у неё
+    # один и тот же при любом начальном условии (похожесть 0.93…0.99), короткая
+    # пишет то, что сейчас, и рельеф у каждой свой (у места события размер гуляет
+    # в десятки раз). Тот же урок, что у средней связи, но про место, а не про
+    # уровень.
+    least_agree = Inf
+    for a in 1:6, b in (a + 1):6
+        least_agree = min(least_agree, relief_agreement(wide_reliefs[a], wide_reliefs[b]))
+    end
+    short_near = Float64[]
+    for seed in 1:6
+        quiet = lived(1e-2, 200, seed)
+        δ = relief_of(lived(1e-2, 200, seed; place = 1), quiet)
+        push!(short_near, relief_place(δ, 1)[1])
+    end
+    push!(results, report_at_least("долгая память пишет один рельеф на все условия: похожесть не меньше",
+                                   least_agree, 0.5))
+    push!(results, report_at_least("а короткая пишет рельеф свой: размер у места гуляет не меньше",
+                                   maximum(short_near) / minimum(short_near), 10.0))
+
+    # И тает рельеф по сроку памяти: за T секунд тишины — в e^(ε·T) раз. Проверяется
+    # двумя памятями сразу (1/ε = 1000 с и 500 с): у каждой свой срок, и обе дают
+    # ровно свой. Значит срок памяти читается и на стирании — тем же ε, которым
+    # среда писала (сцена `relief.jl`; расхождение — десятые доли процента).
+    worst_fade = 0.0
+    for ε in (1e-3, 2e-3), seed in 1:3
+        routed = lived(ε, 200, seed; place = 1)
+        before = relief_place(relief_of(routed, lived(ε, 200, seed)), 1)[1]
+        advance!(routed, 1200.0)
+        after = relief_place(relief_of(routed, lived(ε, 400, seed)), 1)[1]
+        worst_fade = max(worst_fade, abs(before / after / exp(ε * 1200.0) - 1))
+    end
+    push!(results, report_zeros("рельеф тает по сроку памяти: за 1200 с тишины — в e^(ε·1200) раз",
+                                worst_fade, 2e-2))
 
     println("\nсогласованность и наложение")
 
@@ -955,6 +1056,58 @@ function mean_link(m::Medium)
         n += 1
     end
     return s / n
+end
+
+"""
+    relief_of(a, b)
+
+Рельеф: чем связь среды `a` отличается от связи среды `b` по каждому месту.
+Собственные связи не считаются: там своя связь, и она не пишется.
+"""
+function relief_of(a::Medium, b::Medium)
+    δ = zeros(size(a.coupling))
+    for i in axes(δ, 1), j in axes(δ, 2)
+        i == j && continue
+        δ[i, j] = a.coupling[i, j] - b.coupling[i, j]
+    end
+    return δ
+end
+
+"""
+    relief_place(δ, k)
+
+Рельеф у места k (связи, которых k касается) и вдали от него: среднее |δ| по
+связям. Место — положение, а не величина: если запись помнит место, у места
+должно быть больше.
+"""
+function relief_place(δ::AbstractMatrix{Float64}, k::Int)
+    near, far, nn, nf = 0.0, 0.0, 0, 0
+    for i in axes(δ, 1), j in axes(δ, 2)
+        i == j && continue
+        v = abs(δ[i, j])
+        if i == k || j == k
+            near += v; nn += 1
+        else
+            far += v; nf += 1
+        end
+    end
+    return (near / nn, far / nf)
+end
+
+"""
+    relief_agreement(δa, δb)
+
+Похожесть двух рельефов: связь Пирсона по местам. Единица — рельеф тот же,
+ноль — связи между рельефами нет.
+"""
+function relief_agreement(δa::AbstractMatrix{Float64}, δb::AbstractMatrix{Float64})
+    va, vb = Float64[], Float64[]
+    for i in axes(δa, 1), j in axes(δa, 2)
+        i == j && continue
+        push!(va, δa[i, j])
+        push!(vb, δb[i, j])
+    end
+    return cor(va, vb)
 end
 
 """
