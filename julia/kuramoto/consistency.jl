@@ -1268,6 +1268,243 @@ function checks()
             held_coarse <= 1 ? "сошлось" : "НЕ СОШЛОСЬ", held_coarse)
     push!(results, held_coarse <= 1)
 
+
+    println("\nглубина: что у моды внутри, кроме отношения")
+
+    # Первое: мир моды пуст — и пуст ровным нулём. У моды одна вибрация, она сама;
+    # среда есть взаимодействие вибраций, а одной вибрации взаимодействовать не с
+    # чем. Второй уровень можно поставить той же записью, что и первый (`inside!`), и
+    # он ничего не добавляет: ни силы, ни отличия. Значит глубина не растёт
+    # повторением границы — на втором уровне повторять нечего.
+    empty_pull, deep_gap = 0.0, 0.0
+    for seed in 1:3
+        deep = build(modes = 3, band = 0.1, tuning = 8.0, inner = 1.5, seed = seed)
+        flat = build(modes = 3, band = 0.1, tuning = 8.0, inner = 1.5, seed = seed)
+        for w in deep.inside
+            inside!(w, coupling = fill(1.5, 1, 1))
+        end
+        force = zeros(1, 1)
+        inner_force!(world(world(deep, 1), 1), force, 1)
+        empty_pull = max(empty_pull, abs(force[1, 1]))
+        advance!(deep, 60.0)
+        advance!(flat, 60.0)
+        deep_gap = max(deep_gap, state_gap(deep, flat),
+                       maximum(abs.(deep.coupling .- flat.coupling)))
+    end
+    push!(results, report_zeros("мир моды пуст: у моды одна вибрация, тянуть не с чем",
+                                empty_pull, TOL_EXACT))
+    push!(results, report_zeros("и второй уровень не меняет ничего: две среды совпадают",
+                                deep_gap, TOL_EXACT))
+
+    # Второе: размер. Место решает, слышит ли мода соседа; размер — чем она держится.
+    # Это не наблюдение, а следствие равновесия промаха:
+    #
+    #     x_p = |D_p + γ·r₀_p − p·D₁| / ((λ + γ)·p·ω₁).
+    #
+    # Если полоса едет вместе с аккордом (Π = Π·k при ω = ω·k), то S(Δ/Π) не
+    # меняется ни на бит, и потому тяга D от размера не зависит вовсе; а растёт с ним
+    # только написанное r₀_p = s·p·ω₀₁ и делитель p·ω₁. Дальше — по строкам: у моды
+    # (i, p) своя сила F = |c + γ·r₀_p|/(p·ω₁), где c = D_p − p·D₁ — тот самый перевес,
+    # который читает `excess.jl`. Там, где среда тянет обертон от основной (c > 0),
+    # модуль раскрывается и γ из нужной жёсткости уходит целиком:
+    #
+    #     λ_нуж = F/s − γ = c / (s·p·ω₁)   — тяга перевеса, делённая на написанную
+    #                                         долю и на размер моды.
+    #
+    # Отсюда и закон: λ_нуж(k)·k = λ_нуж(1) — точный, а не приблизительный. Сверяется
+    # на одном состоянии: две среды одного зерна, у одной размер 1, у другой k, —
+    # различий динамики здесь ещё нет и быть не должно. И то же с другой стороны: у
+    # наибольшего промаха строка-носитель со размером может смениться — тогда λ·k
+    # уплывает, и это печатается числом (сколько зёрен, во сколько раз), а не порогом.
+    "Нужная жёсткость моды (i, p) там, где среда тянет обертон от основной."
+    function excess_need(m::Medium, i::Int, p::Int)
+        c = drag(m, i, p) - p * drag(m, i, 1)
+        c <= 0.0 && return NaN
+        return c / (WRITTEN * p * abs(m.omega[i, 1]))
+    end
+    "То же по строке (i, p) из записи: F/s − γ."
+    function row_need(m::Medium, i::Int, p::Int)
+        base = abs(m.omega[i, 1])
+        r0 = m.omega0[i, p] - p * m.omega0[i, 1]
+        f = abs(drag(m, i, p) + m.damping * r0 - p * drag(m, i, 1)) / (p * base)
+        return f / WRITTEN - m.damping
+    end
+    "Строка (i, p), где сила наибольшая: её и читает нужная жёсткость."
+    function carrier_row(m::Medium)
+        worst, row = -Inf, (0, 0)
+        for i in 1:size(m.omega, 1), p in 2:size(m.omega, 2)
+            base = abs(m.omega[i, 1])
+            base == 0.0 && continue
+            r0 = m.omega0[i, p] - p * m.omega0[i, 1]
+            f = abs(drag(m, i, p) + m.damping * r0 - p * drag(m, i, 1)) / (p * base)
+            f > worst && ((worst, row) = (f, (i, p)))
+        end
+        return row
+    end
+    tug_gap, sum_gap, law_gap, checked = 0.0, 0.0, 0.0, 0
+    scattered, worst_spread = 0, 0.0
+    for seed in 1:6
+        needs = Float64[]
+        first_row, turned = (0, 0), false
+        for k in (0.25, 0.5, 1.0, 2.0, 4.0)
+            one = written_chord(seed = seed, tuning = 8.0)
+            many = written_chord(seed = seed, tuning = 8.0)
+            many.band *= k
+            many.omega0 .*= k
+            many.omega .*= k
+            for i in 1:size(one.omega, 1), p in 1:size(one.omega, 2)
+                tug_gap = max(tug_gap, abs(drag(many, i, p) - drag(one, i, p)))
+            end
+            for i in 1:size(one.omega, 1), p in 2:size(one.omega, 2)
+                need = excess_need(one, i, p)
+                isnan(need) && continue
+                checked += 1
+                sum_gap = max(sum_gap, abs(row_need(one, i, p) - need))
+                law_gap = max(law_gap, abs(excess_need(many, i, p) - need / k))
+            end
+            first_row == (0, 0) && (first_row = carrier_row(many))
+            turned = turned || carrier_row(many) != first_row
+            push!(needs, need_lambda(many) * k)
+        end
+        spread = maximum(needs) / minimum(needs)
+        if turned
+            scattered += 1
+            worst_spread = max(worst_spread, spread)
+        end
+    end
+    push!(results, report_zeros("тяга связи от размера не зависит, когда полоса едет с ним",
+                                tug_gap, TOL_EXACT))
+    push!(results, report_zeros("нужная жёсткость есть тяга перевеса, делённая на написанное и на размер",
+                                sum_gap, TOL_EXACT))
+    push!(results, report_zeros("а размеру она обратна точно: λ_нуж(k)·k = λ_нуж(1)",
+                                law_gap, TOL_EXACT))
+    @printf("  %-56s %-11s %d\n", "сверено мест, где среда тянет обертон от основной",
+            "число", checked)
+    if scattered == 0
+        @printf("  %-56s %-11s у 0 из 6, носитель один\n",
+                "а по наибольшему промаху λ·k постоянно", "число")
+    else
+        @printf("  %-56s %-11s у %d из 6, до %.2f раза\n",
+                "а по наибольшему промаху носитель меняется, и λ·k уплывает", "число",
+                scattered, worst_spread)
+    end
+
+    # Третье — то же самое, но поведением, и с другого конца: там сверялись два
+    # состояния одного зерна, а здесь два размера проживают минуту сами. Доли промаха
+    # у них расходятся, и это не спор с первым: размер у среды не прячется. Частоты и
+    # тяга растут вместе с размером, а время — нет: у крупного аккорда фазы уходят
+    # вперёд во столько же раз, и совпадения в среде другие. Порог объявлен десятой
+    # долей процента — ниже самого расхождения на порядок, — и берётся по зёрнам:
+    # у одного зерна промах гуляет по времени, и порогом это не лечится.
+    gap_size = Inf
+    for seed in 1:6
+        shares = Float64[]
+        for k in (0.25, 1.0, 4.0)
+            m = written_chord(seed = seed, tuning = 8.0)
+            m.band *= k
+            m.omega0 .*= k
+            m.omega .*= k
+            run_written(m, DT)
+            push!(shares, share_of_miss(m))
+        end
+        gap_size = min(gap_size, maximum(shares) - minimum(shares))
+    end
+    push!(results, report_at_least("а в поведении размер виден: доли промаха у размеров расходятся",
+                                   gap_size, 1e-2))
+
+    # Четвёртое — обратный перевес: то, чего здесь до сих пор не читалось ни разу.
+    # Первое чтение отбрасывает строки, которые среда тянет обертон К основной
+    # (`excess_need` возвращает NaN): 315 мест сверено, 285 нет. Спрашивается то же
+    # число без отбрасывания. Модуль раскрывается по знаку перевеса:
+    #
+    #     c > 0:  λ_нуж = c/(s·p·ω₁)                    — γ уходит целиком (сверено);
+    #     c < 0:  λ_нуж = (|c| − 2γ·r₀_p)/(s·p·ω₁)      при |c| > γ·r₀_p;
+    #             λ_нуж = −|c|/(s·p·ω₁)                 при |c| < γ·r₀_p — знак минус.
+    #
+    # γ входит в нужную жёсткость дважды: возвратом к написанному в числителе и
+    # вычетом в самом определении. При c > 0 оба входа гасят друг друга; при c < 0
+    # складываются, и тогда «обратна размеру» перестаёт быть законом моды: на таких
+    # строках λ_нуж·k идёт по прямой и падает ровно на 2γ за единицу размера. И
+    # неположительная нужная жёсткость — это не послабление, а признание, что
+    # требование на строке уже выполнено: она значит ровно, что промах равновесия
+    # при λ = 0 не хуже написанного. Граница этого — не «перевес по модулю», а
+    # перевес от нуля до минус удвоенного возврата, −2γ·r₀_p ≤ c ≤ 0: строка
+    # держится сама, только если среда тянет её к основной и не сильнее, чем
+    # возврат затухания её же написанного. Границы эти ходят с размером (r₀_p ∝ k),
+    # а перевес — нет.
+    "Сила строки (i, p) в долях отношения: |c + γ·r₀_p|/(p·ω₁) — запись равновесия."
+    function row_force(m::Medium, i::Int, p::Int)
+        base = abs(m.omega[i, 1])
+        r0 = m.omega0[i, p] - p * m.omega0[i, 1]
+        return abs(drag(m, i, p) + m.damping * r0 - p * drag(m, i, 1)) / (p * base)
+    end
+    branch_gap, dive_gap = 0.0, 0.0
+    all_rows, toward_rows, free_rows, free_agree = 0, 0, 0, 0
+    rows_by_need, rows_by_border, eligible_rows = 0, 0, 0
+    neg_carriers, all_carriers = 0, 0
+    for seed in 1:6
+        first_needs, eligible = Float64[], Bool[]
+        for k in (1.0, 0.25, 0.5, 2.0, 4.0)
+            m = written_chord(seed = seed, tuning = 8.0)
+            m.band *= k
+            m.omega0 .*= k
+            m.omega .*= k
+            idx = 0
+            for i in 1:size(m.omega, 1), p in 2:size(m.omega, 2)
+                idx += 1
+                base = abs(m.omega[i, 1])
+                c = drag(m, i, p) - p * drag(m, i, 1)
+                r0 = m.omega0[i, p] - p * m.omega0[i, 1]
+                need = row_need(m, i, p)
+                all_rows += 1
+                c <= 0.0 && (toward_rows += 1)
+                if c > 0.0
+                    branch_gap = max(branch_gap, abs(need - c / (WRITTEN * p * base)))
+                elseif abs(c) > m.damping * r0
+                    branch_gap = max(branch_gap,
+                                     abs(need - (abs(c) - 2 * m.damping * r0) / (WRITTEN * p * base)))
+                else
+                    branch_gap = max(branch_gap, abs(need + abs(c) / (WRITTEN * p * base)))
+                end
+                need <= 0.0 && (rows_by_need += 1)
+                (-2 * m.damping * r0 <= c <= 0.0) && (rows_by_border += 1)
+                need <= 0.0 && (free_rows += 1)
+                free_agree += (need <= 0.0) == (row_force(m, i, p) / m.damping <= WRITTEN)
+                if k == 1.0
+                    push!(first_needs, need)
+                    # Одну ветвь на всех размерах даёт только строка «к», у которой перевес
+                    # больше возврата и при самом крупном размере: возврат растёт с ним.
+                    push!(eligible, c < 0.0 && abs(c) > 4 * m.damping * r0)
+                elseif idx <= length(eligible) && eligible[idx]
+                    eligible_rows += 1
+                    dive_gap = max(dive_gap,
+                                   abs(need * k - first_needs[idx] + 2 * m.damping * (k - 1)))
+                end
+            end
+        end
+        let m0 = written_chord(seed = seed, tuning = 8.0)
+            (i, p) = carrier_row(m0)
+            all_carriers += 1
+            drag(m0, i, p) - p * drag(m0, i, 1) <= 0.0 && (neg_carriers += 1)
+        end
+    end
+    push!(results, report_zeros("нужная жёсткость у моды одна на оба знака перевеса",
+                                branch_gap, TOL_EXACT))
+    push!(results, report_zeros("а где среда складывает перевесом больше возврата, λ_нуж·k падает на 2γ",
+                                dive_gap, TOL_EXACT))
+    push!(results, report_zeros("и граница у этого — от нуля до минус удвоенного возврата",
+                                Float64(abs(rows_by_need - rows_by_border)), TOL_EXACT))
+    @printf("  %-56s %-11s %d из %d\n",
+            "неположительная нужная жёсткость значит требование уже выполнено",
+            free_agree == all_rows ? "сошлось" : "НЕ СОШЛОСЬ", free_rows, all_rows)
+    push!(results, free_agree == all_rows)
+    @printf("  %-56s %-11s %d из %d\n", "из них строк «к» — тех, что сверка отбрасывала",
+            "число", toward_rows, all_rows)
+    @printf("  %-56s %-11s %d из %d\n", "и носителей в этой половине",
+            "число", neg_carriers, all_carriers)
+    @printf("  %-56s %-11s %d\n", "сверено строк, у которых ветвь одна на всех размерах",
+            "число", eligible_rows)
+
     return results
 end
 
