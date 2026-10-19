@@ -54,9 +54,11 @@ end
     link_goal(medium, i, j)
 
 То, к чему идёт связь вибраций i и j:
-link · Σₚₙ S(ωⱼₙ−ωᵢₚ)·cos(θᵢₚ−θⱼₙ) / (N·Σₚₙ S).
+(link + N₀ · Σₚₙ S(ωⱼₙ−ωᵢₚ)·cos(θᵢₚ−θⱼₙ) / Σₚₙ S) / N.
 Цель — не среда и не уровень, а совпадение этих двух вибраций: у каждой связи
-своя, и меняется она с состоянием. То же имя и то же число, что в сверке.
+своя, и меняется она с состоянием. Слагаемое link/N — старт, N₀·cos/N делает
+цель сильнее старта, а деление на N держит полную тягу O(1). То же имя и то же
+число, что в сверке.
 """
 function link_goal(m::Medium, i::Int, j::Int)
     acc, weight = 0.0, 0.0
@@ -65,8 +67,7 @@ function link_goal(m::Medium, i::Int, j::Int)
         acc += s * cos(m.theta[i, p] - m.theta[j, n])
         weight += s
     end
-    return weight == 0.0 ? m.coupling[i, j] :
-           m.link * acc / (weight * size(m.coupling, 1))
+    return memory_goal(m, i, j, acc, weight)
 end
 
 """
