@@ -119,10 +119,11 @@ end
     link_goal(medium, i, j)
 
 То, к чему идёт связь вибраций i и j:
-Σₚₙ S(ωⱼₙ−ωᵢₚ)·cos(θᵢₚ−θⱼₙ) / (N·Σₚₙ S).
+link · Σₚₙ S(ωⱼₙ−ωᵢₚ)·cos(θᵢₚ−θⱼₙ) / (N·Σₚₙ S).
 Это ровно та цель, к которой связь сдвигается за шаг, — и по ней читается,
-какой долей пути она идёт. Деление на N — не украшение: оно держит связь на
-пару O(1/N), чтобы полная тяга не росла с числом вибраций.
+какой долей пути она идёт. Деление на N держит связь на пару O(1/N), чтобы
+полная тяга не росла с числом вибраций; множитель link возвращает цели
+масштаб среды, и при полном совпадении цель равна старту link/N.
 """
 function link_goal(m::Medium, i::Int, j::Int)
     acc, weight = 0.0, 0.0
@@ -131,7 +132,8 @@ function link_goal(m::Medium, i::Int, j::Int)
         acc += s * cos(m.theta[i, p] - m.theta[j, n])
         weight += s
     end
-    return weight == 0.0 ? m.coupling[i, j] : acc / (weight * size(m.coupling, 1))
+    return weight == 0.0 ? m.coupling[i, j] :
+           m.link * acc / (weight * size(m.coupling, 1))
 end
 
 """
@@ -376,10 +378,11 @@ function checks()
     # Прожитое пишется, только если его хватило на срок памяти: наводит связь
     # произведение ε·прожитое, а не событие. При ε·T = 0.012 связь остаётся при
     # своей (0.060 против начальной 0.060), при 1.2 — проходит больше половины
-    # пути к 1/N (0.0849 против 0.060; цель — 0.100, путь — 0.040, пройдено
-    # 0.025, то есть 0.57 пути). Время здесь одно и то же — 1200 с: меняется
+    # пути к своей цели. Цель теперь `link·cos/N`, и она ниже старта `link/N`,
+    # поэтому путь идёт вниз: старт 0.060, цель 0.049…0.057, связь 0.054…0.058,
+    # пройдено 0.56…0.73 пути. Время здесь одно и то же — 1200 с: меняется
     # только ε, то есть срок памяти 1/ε. Путь меряется долей, а не абсолютной
-    # связью: после нормировки цели cos/N абсолютная шкала другая.
+    # связью: после умножения цели на link абсолютная шкала снова другая.
     worst, least = 0.0, Inf
     for seed in 1:6
         little = build(memory = 1e-5, seed = seed)
@@ -389,7 +392,9 @@ function checks()
             advance!(plenty, 6.0)
         end
         worst = max(worst, abs(mean_link(little) - 0.6 / N))
-        least = min(least, (mean_link(plenty) - 0.6 / N) / (1 / N - 0.6 / N))
+        start = 0.6 / N
+        target = mean_goal(plenty)
+        least = min(least, (start - mean_link(plenty)) / (start - target))
     end
     push!(results, report_zeros("пока ε·T = 0.012, связь остаётся при своей: мало прожитого — мало написано",
                                 worst, 2e-2))
@@ -419,9 +424,9 @@ function checks()
 
     # Событие в широкую запись не входит вовсе: среда, через которую событие шло
     # двести раз, и среда того же зерна и возраста без событий накопили одну и ту
-    # же связь (разница 0.0117). Значит пишется прожитое, а событие входит в
+    # же связь (разница 0.0102). Значит пишется прожитое, а событие входит в
     # запись только через состояние — там, где окно короче прожитого. Мера
-    # остаётся абсолютной: при цели cos/N она и так меньше старой, и порог 0.02
+    # остаётся абсолютной: при цели link·cos/N она ещё меньше, и порог 0.02
     # читается в тех же единицах, что и раньше.
     worst = 0.0
     for seed in 1:6
@@ -480,8 +485,9 @@ function checks()
             abs(d) < 1e-12 && continue
             share_err = max(share_err, abs((m.coupling[i, j] - was[i, j]) / d - DT * 1e-3))
         end
-        # Цели теперь O(1/N); разброс читается в прежних единицах — умножен на N.
-        goal_spread = min(goal_spread, N * (maximum(goals) - minimum(goals)))
+        # Цели теперь O(1/N) и умножены на link; разброс читается в прежних
+        # единицах cos/N — умножен на N/link.
+        goal_spread = min(goal_spread, (N / m.link) * (maximum(goals) - minimum(goals)))
         write_ratio = min(write_ratio, maximum(written) / median(written))
     end
     push!(results, report_zeros("за шаг связь идёт к цели долей ε·dt — и у всех связей доля одна",
@@ -1008,16 +1014,16 @@ function checks()
     for seed in 1:6
         a = build(modes = 3, band = 0.1, seed = seed)
         b = Medium(omega0 = a.omega0[:, perm], theta = a.theta[:, perm],
-                   coupling = copy(a.coupling), band = a.band, damping = a.damping,
-                   tuning = a.tuning, memory = a.memory)
+                   coupling = copy(a.coupling), link = a.link, band = a.band,
+                   damping = a.damping, tuning = a.tuning, memory = a.memory)
         step!(a, DT)
         step!(b, DT)
         worst = max(worst, maximum(abs.(b.omega[:, back] .- a.omega)),
                            maximum(abs.(b.theta[:, back] .- a.theta)))
         c = build(modes = 3, band = 0.1, tuning = 8.0, seed = seed)
         d = Medium(omega0 = c.omega0[:, perm], theta = c.theta[:, perm],
-                   coupling = copy(c.coupling), band = c.band, damping = c.damping,
-                   tuning = c.tuning, memory = c.memory)
+                   coupling = copy(c.coupling), link = c.link, band = c.band,
+                   damping = c.damping, tuning = c.tuning, memory = c.memory)
         step!(c, DT)
         step!(d, DT)
         control = min(control, maximum(abs.(d.omega[:, back] .- c.omega)),
@@ -1541,6 +1547,23 @@ function mean_link(m::Medium)
     for i in axes(m.coupling, 1), j in axes(m.coupling, 2)
         i == j && continue
         s += m.coupling[i, j]
+        n += 1
+    end
+    return s / n
+end
+
+"""
+    mean_goal(medium)
+
+Средняя цель связи по всем связям, кроме собственных. Это не начальная связь:
+цель помнит `link·cos/N` и потому меняется вместе с фазами. Нужна там, где
+путь связи меряется от старта к тому, куда она сейчас идёт.
+"""
+function mean_goal(m::Medium)
+    s, n = 0.0, 0
+    for i in axes(m.coupling, 1), j in axes(m.coupling, 2)
+        i == j && continue
+        s += link_goal(m, i, j)
         n += 1
     end
     return s / n

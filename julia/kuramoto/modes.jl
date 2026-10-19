@@ -96,9 +96,10 @@ function step_held!(m::Medium, dt::Float64, strength::Float64, bandr::Float64,
                 acc += s * cos(m.theta[i, p] - m.theta[j, n])
                 weight += s
             end
-            # Связь на пару — cos/N: полная тяга N·W не растёт с N.
+            # Связь на пару — link·cos/N: полная тяга N·W не растёт с N,
+            # а её предел — link.
             target = weight == 0.0 ? m.coupling[i, j] :
-                     acc / (weight * size(m.coupling, 1))
+                     m.link * acc / (weight * size(m.coupling, 1))
             m.coupling[i, j] += dt * m.memory * (target - m.coupling[i, j])
         end
     end
@@ -193,9 +194,10 @@ function step_scale!(m::Medium, dt::Float64, strength::Float64,
                 acc += s * cos(m.theta[i, p] - m.theta[j, n])
                 weight += s
             end
-            # Связь на пару — cos/N: полная тяга N·W не растёт с N.
+            # Связь на пару — link·cos/N: полная тяга N·W не растёт с N,
+            # а её предел — link.
             target = weight == 0.0 ? m.coupling[i, j] :
-                     acc / (weight * size(m.coupling, 1))
+                     m.link * acc / (weight * size(m.coupling, 1))
             m.coupling[i, j] += dt * m.memory * (target - m.coupling[i, j])
         end
     end
@@ -347,9 +349,10 @@ function step_levels!(m::Medium, dt::Float64, strength::Float64,
                 acc += s * cos(m.theta[i, p] - m.theta[j, n])
                 weight += s
             end
-            # Связь на пару — cos/N: полная тяга N·W не растёт с N.
+            # Связь на пару — link·cos/N: полная тяга N·W не растёт с N,
+            # а её предел — link.
             target = weight == 0.0 ? m.coupling[i, j] :
-                     acc / (weight * size(m.coupling, 1))
+                     m.link * acc / (weight * size(m.coupling, 1))
             m.coupling[i, j] += dt * m.memory * (target - m.coupling[i, j])
         end
     end

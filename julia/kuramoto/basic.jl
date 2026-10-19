@@ -20,7 +20,7 @@
 #     ω̇ᵢₘ = Σⱼₙ Wᵢⱼ S(ωⱼₙ − ωᵢₘ) sin(θⱼₙ − θᵢₘ)
 #                 + Σ_q Uᵢₘq S(ωᵢ_q − ωᵢₘ) sin(θᵢ_q − θᵢₘ)
 #                 − λ (ωᵢₘ − m ωᵢ₁) − γ (ωᵢₘ − ω₀ᵢₘ)
-#     Ẇᵢⱼ = εᵢⱼ ( Σₚₙ S cos(θᵢₚ − θⱼₙ) / (N Σₚₙ S) − Wᵢⱼ )
+#     Ẇᵢⱼ = εᵢⱼ ( link Σₚₙ S cos(θᵢₚ − θⱼₙ) / (N Σₚₙ S) − Wᵢⱼ )
 #     U̇ᵢₘq = εᵤᵢₘq ( cos(θᵢₘ − θᵢ_q) − Uᵢₘq )    — у каждой вибрации своё русло
 #     S(Δ) = 1 / (1 + (Δ/Π)²)
 #
@@ -69,6 +69,9 @@ const DT = 0.01     # шаг описания, с
 - `omega`    — частоты сейчас: это и есть состояние;
 - `theta`    — фазы;
 - `coupling` — связь между вибрациями: `coupling[i, j]` — насколько j тянет i;
+- `link`     — полная тяга среды на вибрацию: для полного графа связь на пару
+              `link/N`, а предел памяти — `link`; у мира внутри это не тяга
+              внешней среды, поэтому там цель остаётся `cos`;
 - `band`     — полоса отклика Π: чем уже, тем строже резонанс;
 - `tuning`   — λ: строй, жёсткость аккорда: держит обертоны в их отношении
               к основной частоте (`ωᵢₘ → m · ωᵢ₁`); при λ = 0 аккорд не держится.
@@ -77,9 +80,12 @@ const DT = 0.01     # шаг описания, с
               среда не перебивает. У вибрации без мира (одна мода) строя нет:
               держать нечего. Проверено чтением «где живёт строй» в `modes.jl`;
 - `memory`   — ε: как быстро связь деформируется тем, что через неё прошло.
-              Цель внешней связи — `cos / N`: связь на пару остаётся O(1/N), и
-              полная тяга `N·W` не растёт с N. У мира внутри вибрации цель — `cos`:
-              число мод мало и в закон миллиона не входит;
+              Цель внешней связи — `link · cos / N`: связь на пару остаётся O(1/N),
+              полная тяга `N·W` не растёт с N, а её предел — `link`. Множитель
+              `link` возвращает памяти масштаб среды: без него цель помнила бы
+              только совпадение фаз и забывала, какой тягой среда написана.
+              У мира внутри вибрации цель — `cos`: число мод мало и в закон
+              миллиона не входит;
 - `memory_matrix` — ε у каждой связи: `memory_matrix[i, j]` — срок памяти связи
               (i, j) свой. `nothing` — у всего уровня одно ε, и тогда запись
               прежняя ни на число: в шаге то же сложение, меняется только то,
@@ -102,6 +108,7 @@ mutable struct Medium{A<:AbstractMatrix{Float64}, B<:AbstractMatrix{Float64},
     omega::B
     theta::C
     coupling::D
+    link::Float64
     band::Float64
     tuning::Float64
     memory::Float64
@@ -113,6 +120,7 @@ mutable struct Medium{A<:AbstractMatrix{Float64}, B<:AbstractMatrix{Float64},
                       omega::AbstractMatrix{Float64} = copy(omega0),
                       theta::AbstractMatrix{Float64},
                       coupling::AbstractMatrix{Float64},
+                      link::Float64 = size(coupling, 1) * sum(coupling) / length(coupling),
                       band::Float64 = Inf, tuning::Float64 = 0.0,
                       memory::Float64 = 0.0,
                       memory_matrix::Union{Nothing, AbstractMatrix{Float64}} = nothing,
@@ -126,7 +134,7 @@ mutable struct Medium{A<:AbstractMatrix{Float64}, B<:AbstractMatrix{Float64},
             size(memory_matrix) == size(coupling) ||
             throw(ArgumentError("раскладка памяти — по связям: вибрации × вибрации"))
         return new{typeof(omega0), typeof(omega), typeof(theta), typeof(coupling)}(
-            omega0, omega, theta, coupling, band, tuning, memory,
+            omega0, omega, theta, coupling, link, band, tuning, memory,
             memory_matrix === nothing ? nothing : Matrix{Float64}(memory_matrix),
             damping, inside)
     end
@@ -296,11 +304,12 @@ function step!(m::Medium, dt::Float64)
                 acc += s * cos(m.theta[i, p] - m.theta[j, n])
                 weight += s
             end
-            # Цель связи на пару — cos/N, а не cos: тогда полная тяга N·W
-            # остаётся конечной при N → ∞. Без деления память поднимала бы
-            # каждую связь к O(1), и среда захлёбывалась бы связью.
+            # Цель связи на пару — link·cos/N, а не cos: тогда полная тяга N·W
+            # остаётся конечной при N → ∞, а её предел равен link. Множитель
+            # link держит память в масштабе среды; без него цель помнила бы
+            # только совпадение фаз и не помнила бы, какой тягой среда написана.
             target = weight == 0.0 ? m.coupling[i, j] :
-                     acc / (weight * size(m.coupling, 1))
+                     m.link * acc / (weight * size(m.coupling, 1))
             m.coupling[i, j] += dt * link_memory(m, i, j) * (target - m.coupling[i, j])
         end
     end
@@ -494,7 +503,7 @@ function build(; modes::Int = 1, link::Float64 = 0.6, band::Float64 = Inf,
         U[p, p] = 0.0                              # мода не тянет саму себя
     end
     m = Medium(omega0 = omega0, theta = theta, coupling = fill(link / N, N, N),
-               band = band, tuning = tuning, memory = memory,
+               link = link, band = band, tuning = tuning, memory = memory,
                memory_matrix = memory_matrix, damping = damping)
     modes > 1 && inside!(m, coupling = U, memory = inner_memory,
                          memory_matrix = inner_memory_matrix)

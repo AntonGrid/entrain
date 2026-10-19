@@ -71,10 +71,11 @@ end
     link_goal(medium, i, j)
 
 То, к чему идёт связь вибраций i и j:
-Σₚₙ S(ωⱼₙ−ωᵢₚ)·cos(θᵢₚ−θⱼₙ) / (N·Σₚₙ S).
+link · Σₚₙ S(ωⱼₙ−ωᵢₚ)·cos(θᵢₚ−θⱼₙ) / (N·Σₚₙ S).
 То же имя и то же число, что в сверке и в сцене места: цель — не среда и не
 уровень, а совпадение этих двух вибраций. Деление на N держит связь на пару
-O(1/N): иначе полная тяга росла бы с числом вибраций.
+O(1/N): иначе полная тяга росла бы с числом вибраций, а множитель link
+возвращает памяти масштаб среды.
 """
 function link_goal(m::Medium, i::Int, j::Int)
     acc, weight = 0.0, 0.0
@@ -83,7 +84,8 @@ function link_goal(m::Medium, i::Int, j::Int)
         acc += s * cos(m.theta[i, p] - m.theta[j, n])
         weight += s
     end
-    return weight == 0.0 ? m.coupling[i, j] : acc / (weight * size(m.coupling, 1))
+    return weight == 0.0 ? m.coupling[i, j] :
+           m.link * acc / (weight * size(m.coupling, 1))
 end
 function main()
     println("срок памяти: у связи или у уровня?\n")

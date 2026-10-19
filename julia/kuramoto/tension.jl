@@ -356,8 +356,9 @@ end
 function unpermuted(m::Medium, σ::Vector{Int})
     back = invperm(σ)
     return Medium(omega0 = m.omega0[:, back], omega = m.omega[:, back],
-                  theta = m.theta[:, back], coupling = copy(m.coupling), band = m.band,
-                  tuning = m.tuning, memory = m.memory, damping = m.damping)
+                  theta = m.theta[:, back], coupling = copy(m.coupling),
+                  link = m.link, band = m.band, tuning = m.tuning, memory = m.memory,
+                  damping = m.damping)
 end
 
 """
