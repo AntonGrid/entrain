@@ -696,7 +696,10 @@ function checks()
     push!(results, report_zeros("общий сдвиг фаз не меняет согласованность", abs(coherence(m) - ρ), TOL_EXACT))
 
     m = build()
-    part_a, part_b = [1, 2, 3], [4, 5, 6, 7, 8, 9, 10]
+    # Разбиение — по числу вибраций среды, а не по десяти: при N = 10 это те же
+    # массивы до бита, а при другом N утверждение остаётся тем же — целое есть
+    # взвешенная сумма частей.
+    part_a, part_b = [1, 2, 3], collect(4:N)
     whole = wave(m, 1.7)
     split = (length(part_a) * listen_to(m, part_a, 1.7) + length(part_b) * listen_to(m, part_b, 1.7)) / N
     push!(results, report_zeros("наложение: целое = взвешенная сумма частей", abs(whole - split), TOL_EXACT))
