@@ -53,7 +53,8 @@ end
 """
     link_goal(medium, i, j)
 
-То, к чему идёт связь вибраций i и j: Σₚₙ S(ωⱼₙ−ωᵢₚ)·cos(θᵢₚ−θⱼₙ) / Σₚₙ S.
+То, к чему идёт связь вибраций i и j:
+Σₚₙ S(ωⱼₙ−ωᵢₚ)·cos(θᵢₚ−θⱼₙ) / (N·Σₚₙ S).
 Цель — не среда и не уровень, а совпадение этих двух вибраций: у каждой связи
 своя, и меняется она с состоянием. То же имя и то же число, что в сверке.
 """
@@ -64,7 +65,7 @@ function link_goal(m::Medium, i::Int, j::Int)
         acc += s * cos(m.theta[i, p] - m.theta[j, n])
         weight += s
     end
-    return weight == 0.0 ? m.coupling[i, j] : acc / weight
+    return weight == 0.0 ? m.coupling[i, j] : acc / (weight * size(m.coupling, 1))
 end
 
 """
