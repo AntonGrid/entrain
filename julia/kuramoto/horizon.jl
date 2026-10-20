@@ -6,7 +6,7 @@
 #
 # Обозначения:
 #   link = K — полная тяга на вибрацию (сумма W_ij по соседям), не связь на пару;
-#   W_ij = K/N — связь на пару в полном графе;
+#   W_ij = K/N — связь на пару в полном графе, K/z — в городе;
 #   R — согласованность (coherence);
 #   F_pair = K/N;
 #   F_coh = N·⟨W⟩·R = K·R   — если фазы складываются в фазе;
@@ -21,11 +21,12 @@
 # Проверка: при N = 100 и 200, link = 0.6, R = 0.978 и 0.979, а сила на пару
 # падает с 0.006 до 0.003. Это не закон по N: R сходится к R∞, а не падает.
 #
-# Память: при ε > 0 цель W_ij → (link + N₀·cos(θ_i − θ_j))/N, где N₀ —
-# опорное число вибраций памяти. Поэтому к сроку 1/ε связь на пару остаётся
-# O(1/N), а полная тяга N·⟨W⟩ — O(1), не N. Предел полной тяги —
-# link + N₀·⟨cos⟩: память помнит и старт среды, и совпадение фаз. Проверено
-# при N = 10 и 100: Ktot стоит, пара — в N раз меньше, R не падает.
+# Память: при ε > 0 цель W_ij → (link + N₀·cos(θ_i − θ_j))/K, где K — число
+# соседей (N в полном графе, z в городе), N₀ — опорное число вибраций памяти.
+# Поэтому к сроку 1/ε связь на пару остаётся O(1/K), а полная тяга K·⟨W⟩ —
+# O(1), не K. Предел полной тяги — link + N₀·⟨cos⟩: память помнит и старт
+# среды, и совпадение фаз. Проверено при N = 10, 100 и в городе N = 100, z = 4:
+# Ktot стоит, пара меняется как N/K, R — свойство графа.
 #
 # Запуск:
 #
@@ -55,10 +56,11 @@ function mean_link(m::Medium)
     s, n = 0.0, 0
     for i in axes(m.coupling, 1), j in axes(m.coupling, 2)
         i == j && continue
+        m.coupling[i, j] == 0.0 && continue     # в городе это не сосед
         s += m.coupling[i, j]
         n += 1
     end
-    return s / n
+    return n == 0 ? 0.0 : s / n
 end
 
 """
@@ -105,7 +107,8 @@ end
     case(link; seed, memory, seconds)
 
 Один прогон: среда с одной модой и широкой полосой. Возвращает согласованность,
-связь на пару, полную тягу N·⟨W⟩ и коллективную силу N·⟨W⟩·R.
+связь на пару, полную тягу на вибрацию K·⟨W⟩ (K = N в полном графе, z в городе)
+и коллективную силу K·⟨W⟩·R.
 """
 function case(link::Float64; seed::Int, memory::Float64 = 0.0,
               seconds::Float64 = T)
@@ -113,13 +116,15 @@ function case(link::Float64; seed::Int, memory::Float64 = 0.0,
     advance!(m, seconds)
     w = mean_link(m)
     R = coherence(m)
-    return (R = R, Wbar = w, Ktot = N * w, pair = link / N, coll = N * w * R)
+    return (R = R, Wbar = w, Ktot = m.degree * w, pair = link / m.degree, coll = m.degree * w * R)
 end
 
 function main()
-    println("Горизонт N: link/N — среднее поле, а не потеря связи")
-    @printf("N = %d, T = %.0f с, зёрна %d…%d, одна мода, полоса Inf\n",
-            N, T, first(SEEDS), last(SEEDS))
+    K = (0 < DEGREE < N) ? DEGREE : N
+    model = K == N ? "полный граф" : "город z = $K"
+    println("Горизонт N: link/K — среднее поле, а не потеря связи; $model")
+    @printf("N = %d, K = %d, T = %.0f с, зёрна %d…%d, одна мода, полоса Inf\n",
+            N, K, T, first(SEEDS), last(SEEDS))
     @printf("Kc = 2γσ√(2π)/π = %.4f при γ = %.1f, σ = %.2f\n",
             critical_link(), GAMMA, SIGMA)
     println()
@@ -130,18 +135,19 @@ function main()
         w = median([x.Wbar for x in v])
         @printf("  %4.2f  %8.4f  %8.4f  %8.4f  %8.4f  %8.2e  %8.4f\n",
                 link, median(R), minimum(R), maximum(R), order_inf(link),
-                link / N, N * w * median(R))
+                link / K, K * w * median(R))
     end
     println()
-    println("  память ε = 1e-3, link = 0.60, цель (link+N₀·cos)/N: Ktot = O(1), pair = O(1/N)")
+    println("  память ε = 1e-3, link = 0.60, цель (link+N₀·cos)/K: Ktot = O(1), pair = O(1/K)")
     for s in SEEDS
         x = case(0.60; seed = s, memory = 1e-3)
         @printf("   зерно %d: R = %.4f  Wbar = %.3e  Ktot = %.3f  coll = %.3f\n",
                 s, x.R, x.Wbar, x.Ktot, x.coll)
     end
     println()
-    println("  При link = 0.60 и N = 1e6: без памяти pair = 6.0e-7, coll = 0.587;")
-    println("  память с целью (link+N₀·cos)/N держит Ktot = link+N₀·R конечным, а не N.")
+    println("  При link = 0.60 и N = 1e6 в полном графе: без памяти pair = 6.0e-7;")
+    println("  память с целью (link+N₀·cos)/K держит Ktot = link+N₀·R конечным, а не K.")
+    println("  В городе при z = O(1) pair = link/z не падает с N, а Ktot — то же O(1).")
     println("  В полном графе масштаб один: W_ij = link/N; при степени z — W_ij = link/z;")
     println("  память города нормируется степенью: цель (link + N₀·cos)/z.")
     return nothing

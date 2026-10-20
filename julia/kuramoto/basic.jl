@@ -20,7 +20,8 @@
 #     ω̇ᵢₘ = Σⱼₙ Wᵢⱼ S(ωⱼₙ − ωᵢₘ) sin(θⱼₙ − θᵢₘ)
 #                 + Σ_q Uᵢₘq S(ωᵢ_q − ωᵢₘ) sin(θᵢ_q − θᵢₘ)
 #                 − λ (ωᵢₘ − m ωᵢ₁) − γ (ωᵢₘ − ω₀ᵢₘ)
-#     Ẇᵢⱼ = εᵢⱼ ( link Σₚₙ S cos(θᵢₚ − θⱼₙ) / (N Σₚₙ S) − Wᵢⱼ )
+#     Ẇᵢⱼ = εᵢⱼ ( (link + N₀ · Σₚₙ S cos(θᵢₚ − θⱼₙ) / Σₚₙ S) / K − Wᵢⱼ )
+#     K = N в полном графе, K = z в городе: тяга на вибрацию K·W — O(1)
 #     U̇ᵢₘq = εᵤᵢₘq ( cos(θᵢₘ − θᵢ_q) − Uᵢₘq )    — у каждой вибрации своё русло
 #     S(Δ) = 1 / (1 + (Δ/Π)²)
 #
@@ -64,6 +65,11 @@ const DT = 0.01     # шаг описания, с
 # цель на пару падает как 1/N, и полная тяга памяти `N·⟨W⟩` остаётся O(1).
 const MEMORY_REFERENCE = 10.0
 
+# Степень среды: сколько соседей у одной вибрации. В полном графе это N (так
+# записан закон миллиона), в городе — z. `ENTRAIN_DEGREE = 0` оставляет полный
+# граф; положительное число собирает разреженный город с этой степенью.
+const DEGREE = parse(Int, get(ENV, "ENTRAIN_DEGREE", "0"))
+
 """
     Medium
 
@@ -76,10 +82,14 @@ const MEMORY_REFERENCE = 10.0
 - `theta`    — фазы;
 - `coupling` — связь между вибрациями: `coupling[i, j]` — насколько j тянет i;
 - `link`     — полная тяга среды на вибрацию: для полного графа связь на пару
-              `link/N`; память пишет цель `(link + N₀·cos)/N`, где `N₀` —
-              опорное число вибраций памяти, поэтому полная тяга памяти
-              `link + N₀·⟨cos⟩` остаётся O(1); у мира внутри это не тяга
-              внешней среды, поэтому там цель остаётся `cos`;
+              `link/N`; память пишет цель `(link + N₀·cos)/K`, где `N₀` —
+              опорное число вибраций памяти, а `K` — число соседей (`degree`):
+              N в полном графе, z в городе. Поэтому полная тяга памяти
+              `K·⟨T⟩ = link + N₀·⟨cos⟩` остаётся O(1) и в городе; у мира внутри
+              это не тяга внешней среды, поэтому там цель остаётся `cos`;
+- `degree`   — K: число соседей одной вибрации. В полном графе N, в разреженном
+              городе z. От него нормируется память, чтобы тяга на вибрацию
+              `z·W` не росла вместе со степенью;
 - `band`     — полоса отклика Π: чем уже, тем строже резонанс;
 - `tuning`   — λ: строй, жёсткость аккорда: держит обертоны в их отношении
               к основной частоте (`ωᵢₘ → m · ωᵢ₁`); при λ = 0 аккорд не держится.
@@ -88,9 +98,9 @@ const MEMORY_REFERENCE = 10.0
               среда не перебивает. У вибрации без мира (одна мода) строя нет:
               держать нечего. Проверено чтением «где живёт строй» в `modes.jl`;
 - `memory`   — ε: как быстро связь деформируется тем, что через неё прошло.
-              Цель внешней связи — `(link + N₀·cos)/N`: связь на пару остаётся
-              O(1/N), полная тяга `N·W` не растёт с N и равна
-              `link + N₀·⟨cos⟩`. Старт `link/N` входит в цель, поэтому память
+              Цель внешней связи — `(link + N₀·cos)/K`: связь на пару остаётся
+              O(1/K), полная тяга `K·W` не растёт ни с N, ни со степенью и равна
+              `link + N₀·⟨cos⟩`. Старт `link/K` входит в цель, поэтому память
               не ослабляет связь ниже старта, а совпадение фаз делает её
               сильнее. У мира внутри вибрации цель — `cos`: число мод мало и
               в закон миллиона не входит;
@@ -117,34 +127,43 @@ mutable struct Medium{A<:AbstractMatrix{Float64}, B<:AbstractMatrix{Float64},
     theta::C
     coupling::D
     link::Float64
+    degree::Int
     band::Float64
     tuning::Float64
     memory::Float64
     memory_matrix::Union{Nothing, Matrix{Float64}}
     damping::Float64
     inside::Union{Nothing, Vector{Medium}}
+    neighbors::Vector{Vector{Int}}
 
     function Medium(; omega0::AbstractMatrix{Float64},
                       omega::AbstractMatrix{Float64} = copy(omega0),
                       theta::AbstractMatrix{Float64},
                       coupling::AbstractMatrix{Float64},
                       link::Float64 = size(coupling, 1) * sum(coupling) / length(coupling),
+                      degree::Int = size(coupling, 1),
                       band::Float64 = Inf, tuning::Float64 = 0.0,
                       memory::Float64 = 0.0,
                       memory_matrix::Union{Nothing, AbstractMatrix{Float64}} = nothing,
                       damping::Float64 = 0.8,
-                      inside::Union{Nothing, Vector{Medium}} = nothing)
+                      inside::Union{Nothing, Vector{Medium}} = nothing,
+                      neighbors::Union{Nothing, AbstractVector} = nothing)
         size(omega0) == size(omega) == size(theta) ||
             throw(ArgumentError("состояние — одна раскладка: вибрации × моды"))
         size(coupling) == (size(omega, 1), size(omega, 1)) ||
             throw(ArgumentError("связь — между вибрациями: по числу вибраций"))
+        degree >= 1 || throw(ArgumentError("степень среды — хотя бы один сосед"))
         memory_matrix === nothing ||
             size(memory_matrix) == size(coupling) ||
             throw(ArgumentError("раскладка памяти — по связям: вибрации × вибрации"))
+        n = size(coupling, 1)
+        adj = neighbors === nothing ?
+            [[j for j in 1:n if j != i && coupling[i, j] != 0.0] for i in 1:n] :
+            [Int[j for j in neighbors[i] if 1 <= j <= n && j != i] for i in 1:n]
         return new{typeof(omega0), typeof(omega), typeof(theta), typeof(coupling)}(
-            omega0, omega, theta, coupling, link, band, tuning, memory,
+            omega0, omega, theta, coupling, link, degree, band, tuning, memory,
             memory_matrix === nothing ? nothing : Matrix{Float64}(memory_matrix),
-            damping, inside)
+            damping, inside, adj)
     end
 end
 
@@ -279,17 +298,20 @@ end
 
 Цель связи (i, j) по уже сложенным `acc = Σ S·cos` и `weight = Σ S`:
 
-    (link + MEMORY_REFERENCE · acc/weight) / N.
+    (link + MEMORY_REFERENCE · acc/weight) / K.
 
-Слагаемое `link/N` — то, чем среда написана: при полном расхождении цель не
-ниже старта. Слагаемое `MEMORY_REFERENCE·cos/N` — совпадение фаз, прочитанное
-при опорном числе вибраций. Вместе они дают цель сильнее старта уже при
-`cos > 0`, а полную тягу `N·⟨W⟩ = link + MEMORY_REFERENCE·⟨cos⟩` — O(1) при
-любом N. Это и есть запись, которая не упирается в старт и не растёт с N.
+`K` — число соседей (`degree`): в полном графе N, в городе z. Слагаемое
+`link/K` — то, чем среда написана: при полном расхождении цель не ниже старта.
+Слагаемое `MEMORY_REFERENCE·cos/K` — совпадение фаз, прочитанное при опорном
+числе вибраций. Вместе они дают цель сильнее старта уже при `cos > 0`, а полную
+тягу `K·⟨W⟩ = link + MEMORY_REFERENCE·⟨cos⟩` — O(1) при любом N и любой степени
+z. В городе это ровно то же число на вибрацию, а не на весь мир: пара падает
+как 1/z, сумма по соседям стоит. Это и есть запись, которая не упирается в
+старт, не растёт с N и не зависит от того, полный граф или город.
 """
 @inline function memory_goal(m::Medium, i::Int, j::Int, acc::Float64, weight::Float64)
     weight == 0.0 && return m.coupling[i, j]
-    return (m.link + MEMORY_REFERENCE * acc / weight) / size(m.coupling, 1)
+    return (m.link + MEMORY_REFERENCE * acc / weight) / m.degree
 end
 
 function step!(m::Medium, dt::Float64)
@@ -297,8 +319,7 @@ function step!(m::Medium, dt::Float64)
     drive = zeros(vibs, modes)
     for i in 1:vibs, p in 1:modes
         d = 0.0
-        for j in 1:vibs
-            j == i && continue
+        for j in m.neighbors[i]
             for n in 1:modes
                 s = overlap(m.omega[j, n] - m.omega[i, p], m.band)
                 d += m.coupling[i, j] * s * sin(m.theta[j, n] - m.theta[i, p])
@@ -308,36 +329,34 @@ function step!(m::Medium, dt::Float64)
     end
     for i in 1:vibs
         w = world(m, i)
-        (w === nothing || all(iszero, w.coupling)) && continue
-        inner_force!(w, drive, i)
-    end
-    # Строй и затухание: у кого есть мир — того держит мир, у кого нет — среда.
-    for i in 1:vibs, p in 1:modes
-        w = world(m, i)
+        w === nothing || all(iszero, w.coupling) || inner_force!(w, drive, i)
+        # Строй и затухание: у кого есть мир — того держит мир, у кого нет — среда.
         tuning = w === nothing ? m.tuning : w.tuning
         damping = w === nothing ? m.damping : w.damping
-        if p > 1 && tuning != 0.0
-            drive[i, p] -= tuning * (m.omega[i, p] - p * m.omega[i, 1])
+        for p in 1:modes
+            if p > 1 && tuning != 0.0
+                drive[i, p] -= tuning * (m.omega[i, p] - p * m.omega[i, 1])
+            end
+            damping != 0.0 && (drive[i, p] -= damping * (m.omega[i, p] - m.omega0[i, p]))
         end
-        damping != 0.0 && (drive[i, p] -= damping * (m.omega[i, p] - m.omega0[i, p]))
     end
     m.omega .+= dt .* drive
     m.theta .+= dt .* m.omega
     if has_memory(m)
-        for i in 1:vibs, j in 1:vibs
-            i == j && continue
-            acc, weight = 0.0, 0.0
-            for p in 1:modes, n in 1:modes
-                s = overlap(m.omega[j, n] - m.omega[i, p], m.band)
-                acc += s * cos(m.theta[i, p] - m.theta[j, n])
-                weight += s
+        for i in 1:vibs
+            for j in m.neighbors[i]
+                acc, weight = 0.0, 0.0
+                for p in 1:modes, n in 1:modes
+                    s = overlap(m.omega[j, n] - m.omega[i, p], m.band)
+                    acc += s * cos(m.theta[i, p] - m.theta[j, n])
+                    weight += s
+                end
+                # Цель связи на пару — (link + MEMORY_REFERENCE·cos)/K, где K — число
+                # соседей: N в полном графе, z в городе. Поэтому полная тяга на
+                # вибрацию K·W = link + MEMORY_REFERENCE·⟨cos⟩ — O(1) в обеих моделях.
+                target = memory_goal(m, i, j, acc, weight)
+                m.coupling[i, j] += dt * link_memory(m, i, j) * (target - m.coupling[i, j])
             end
-            # Цель связи на пару — (link + MEMORY_REFERENCE·cos)/N. Первое
-            # слагаемое удерживает старт, второе возвращает памяти совпадение
-            # фаз в масштабе опорного числа вибраций. Поэтому цель сильнее
-            # старта, а полная тяга N·W = link + MEMORY_REFERENCE·⟨cos⟩ — O(1).
-            target = memory_goal(m, i, j, acc, weight)
-            m.coupling[i, j] += dt * link_memory(m, i, j) * (target - m.coupling[i, j])
         end
     end
     for i in 1:vibs
@@ -491,7 +510,45 @@ drift(m::Medium, i::Int, p::Int = 1) = abs(m.omega[i, p] - m.omega0[i, p])
 # --- построение -----------------------------------------------------------
 
 """
-    build(; modes = 1, link = 0.6, band = Inf, tuning = 0.0,
+    city_adjacency(n, z)
+
+Соседство города: у каждой вибрации ровно z соседей. При z = 4 и раскладке
+N = rows·cols, где обе стороны не меньше трёх, — двумерный тор (кварталы:
+четыре соседа, края смыкаются); иначе — кольцо с z/2 соседями в каждую сторону.
+Матрица симметрична: если i слышит j, то и j слышит i.
+"""
+function city_adjacency(n::Int, z::Int)
+    z >= 2 && iseven(z) || throw(ArgumentError("степень города — чётное число не меньше 2"))
+    z <= n - 1 || throw(ArgumentError("соседей не больше, чем других вибраций"))
+    A = zeros(n, n)
+    rows = isqrt(n)
+    while rows > 1 && n % rows != 0
+        rows -= 1
+    end
+    cols = n ÷ rows
+    if z == 4 && rows >= 3 && cols >= 3
+        for i in 1:n
+            r, c = divrem(i - 1, cols)
+            for (dr, dc) in ((1, 0), (-1, 0), (0, 1), (0, -1))
+                rr, cc = mod(r + dr, rows), mod(c + dc, cols)
+                j = rr * cols + cc + 1
+                j == i && continue
+                A[i, j] = 1.0
+                A[j, i] = 1.0
+            end
+        end
+    else
+        for i in 1:n, d in 1:(z ÷ 2)
+            j = mod1(i + d, n)
+            A[i, j] = 1.0
+            A[j, i] = 1.0
+        end
+    end
+    return A
+end
+
+"""
+    build(; modes = 1, link = 0.6, degree = DEGREE, band = Inf, tuning = 0.0,
             memory = 1e-3, inner = 0.0, inner_memory = 0.0,
             inner_matrix = nothing, damping = 0.8, seed = 4)
 
@@ -501,13 +558,20 @@ drift(m::Medium, i::Int, p::Int = 1) = abs(m.omega[i, p] - m.omega0[i, p])
 отклик без различия совпадений. Аккорд, полоса и строй — тот же самый язык,
 просто теперь в нём есть то, что слово называло аккордом.
 
+`degree` — K: число соседей одной вибрации. Ноль (по умолчанию вне
+`ENTRAIN_DEGREE`) — полный граф, `K = N`; положительное число — разреженный
+город, `K = z`, где связь на пару `link/z`, а память пишет
+`(link + N₀·cos)/z`. Поэтому полная тяга на вибрацию `K·W = link + N₀·⟨cos⟩`
+одна и та же в обеих моделях, а пара с ростом z падает как 1/z.
+
 `inner` — связь внутри вибрации: то же, что `link`, но на меньшем масштабе, и
 своя у каждой вибрации. Своя матрица (`inner_matrix`) задаётся, когда связь
 внутри должна зависеть от того, какие это моды, а не только от того, насколько
 они совпали; каждому миру достаётся её копия. `inner_memory` — εᵤ: русло внутри,
 то же, что `memory`, но на меньшем масштабе, и тоже своё у каждой вибрации.
 """
-function build(; modes::Int = 1, link::Float64 = 0.6, band::Float64 = Inf,
+function build(; modes::Int = 1, link::Float64 = 0.6, degree::Int = DEGREE,
+                 band::Float64 = Inf,
                  tuning::Float64 = 0.0, memory::Float64 = 1e-3,
                  memory_matrix::Union{Nothing,AbstractMatrix{Float64}} = nothing,
                  inner::Float64 = 0.0, inner_memory::Float64 = 0.0,
@@ -515,6 +579,7 @@ function build(; modes::Int = 1, link::Float64 = 0.6, band::Float64 = Inf,
                  inner_memory_matrix::Union{Nothing,AbstractMatrix{Float64}} = nothing,
                  damping::Float64 = 0.8, seed::Int = 4)
     modes >= 1 || throw(ArgumentError("у вибрации хотя бы одна частота"))
+    degree >= 0 || throw(ArgumentError("степень среды не отрицательна"))
     rng = MersenneTwister(seed)
     base = 1.0 .+ 0.15 .* randn(rng, N)          # основные частоты вибраций
     omega0 = zeros(N, modes)
@@ -529,11 +594,18 @@ function build(; modes::Int = 1, link::Float64 = 0.6, band::Float64 = Inf,
     for p in 1:modes
         U[p, p] = 0.0                              # мода не тянет саму себя
     end
-    m = Medium(omega0 = omega0, theta = theta, coupling = fill(link / N, N, N),
-               link = link, band = band, tuning = tuning, memory = memory,
+    sparse = 0 < degree < N
+    K = sparse ? degree : N
+    coupling = sparse ? (link / K) .* city_adjacency(N, K) : fill(link / N, N, N)
+    m = Medium(omega0 = omega0, theta = theta, coupling = coupling,
+               link = link, degree = K, band = band, tuning = tuning, memory = memory,
                memory_matrix = memory_matrix, damping = damping)
-    modes > 1 && inside!(m, coupling = U, memory = inner_memory,
-                         memory_matrix = inner_memory_matrix)
+    # Мир без связи и без памяти не делает ничего: незачем держать сто пустых
+    # миров, если внутри вибрации нечего тянуть и нечего писать.
+    inner_used = inner != 0.0 || inner_memory != 0.0 ||
+                 inner_matrix !== nothing || inner_memory_matrix !== nothing
+    modes > 1 && inner_used && inside!(m, coupling = U, memory = inner_memory,
+                                       memory_matrix = inner_memory_matrix)
     return m
 end
 
