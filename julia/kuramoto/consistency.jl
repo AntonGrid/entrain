@@ -26,6 +26,18 @@ const TOL_EXACT = 1e-9     # численная сумма: сходится к 
 const TOL_SCHEME = 5e-3    # точность схемы первого порядка
 const WRITTEN = 1e-2       # написанный процент по имени: то, чем среда написана
 
+# Пороги Утверждения №87 (индекс стерильности) названы до прогона, а не подобраны
+# после: рельеф, у которого остатки нормальны с A² ≥ 0.1 и разброс не ниже 0.5 %
+# от среднего, — рельеф среды. Ниже обоих порогов он слишком похож на формулу,
+# чтобы быть прожитым: так выглядит сговор, а не среда.
+const STERILE_A2 = 0.1
+const STERILE_CV = 0.005
+# Сглаживание LogSumExp: три β, на которых проверяется предел и гладкость.
+const BETAS = (1.0, 4.0, 16.0)
+# Статистика A² считается по остаткам, а остатков должно быть достаточно, чтобы
+# квантили нормального закона читались: вдвое меньше — уже не выборка.
+const STERILE_MIN = 16
+
 # Пороги места — свойство степени, а не общий порог: у места z связей, среднее по
 # ним в N/z раз крупнее, чем в полном графе, и одна случайная связь тянет его
 # сильнее. Измерено: в полном графе место выше фона в 20.4 раза (1-я вибрация) и
@@ -1604,6 +1616,87 @@ function checks()
     @printf("  %-56s %-11s %d\n", "сверено строк, у которых ветвь одна на всех размерах",
             "число", eligible_rows)
 
+    # ── Утверждение №87. Индекс стерильности ────────────────────────────────
+    # Детектор сговора: рельеф, который слишком похож на формулу, помечается
+    # провалом. Проверяются оба исхода сразу — критерий, который ничего не
+    # ловит, и критерий, который ловит всё, неотличимы от исправного, если
+    # смотреть только на один из них.
+    sterile_ok = true
+    sterile_times = collect(0.0:6.0:600.0)
+    ideal_trace = (times = sterile_times,
+                   relief = [0.01 * exp(-1e-3 * t) for t in sterile_times],
+                   memory = 1e-3)
+    ideal_index = sterility_index(ideal_trace)
+    ideal_caught = ideal_index.verdict == :failed && ideal_index.a2 < STERILE_A2
+    sterile_ok &= ideal_caught
+    @printf("  %-56s %-11s A²=%.3f CV=%.3f\n", "идеальный рельеф помечен сговором",
+            ideal_caught ? "сошлось" : "НЕ СОШЛОСЬ", ideal_index.a2, ideal_index.cv)
+    for seed in 1:3
+        live_index = sterility_index(relief_trace(1e-3; seed = seed))
+        live_ok = live_index.verdict == :passed &&
+                  live_index.a2 >= STERILE_A2 && live_index.cv >= STERILE_CV
+        sterile_ok &= live_ok
+        @printf("  %-56s %-11s A²=%.3f CV=%.4f\n",
+                "прожитой рельеф (зерно $seed) не помечен",
+                live_ok ? "сошлось" : "НЕ СОШЛОСЬ", live_index.a2, live_index.cv)
+    end
+    push!(results, sterile_ok)
+
+    # ── Утверждение №88. Сходимость: Банах, а не наблюдение ─────────────────
+    # λ* — наименьшая неподвижная точка g. Доказательство опирается на сжатие:
+    # если все h_k липшицевы с константой не больше L < 1, то и max, и его
+    # сглаживание — сжатия с той же L (LogSumExp не растягивает значения), и
+    # теорема Банаха даёт существование, единственность и геометрическую
+    # скорость. Здесь проверяются обе посылки и оба следствия на функциях, у
+    # которых производные известны: подгонять нечего.
+    lips = 0.5                              # max |b_k| — названо до прогона
+    lift = (0.0, 1.0, 2.0)                  # a_k
+    slope = (0.5, 0.2, -0.1)                # b_k
+    barrier = 0.8                           # γ
+    rows_at = λ -> [lift[k] + slope[k] * λ for k in 1:3]
+    plain_op = λ -> maximum(rows_at(λ)) - barrier
+    smooth_op = β -> (λ -> smooth_max(rows_at(λ), β) - barrier)
+
+    worst_ratio = 0.0                       # наибольшее |Δg̃|/Δλ по сетке
+    jensen_gap = 0.0                        # нарушение max ≤ g̃+γ ≤ max + ln K/β
+    for β in BETAS
+        op = smooth_op(β)
+        for λ in 0.0:0.05:64.0
+            worst_ratio = max(worst_ratio, abs(op(λ + 0.05) - op(λ)) / 0.05)
+            gap = smooth_max(rows_at(λ), β) - maximum(rows_at(λ))
+            jensen_gap = max(jensen_gap, gap - log(3) / β, -gap)
+        end
+    end
+    plain_root = banach_iteration(plain_op, 1.0)
+    same_root = 0.0                         # |λ*_β − λ*_β'| из двух начал
+    speed_gap = 0.0                         # нарушение |λ_n − λ*| ≤ qⁿ|λ₀ − λ*|
+    beta_gap = 0.0                          # нарушение |λ*_β − λ*| ≤ ln K/(β(1−q))
+    for β in BETAS
+        op = smooth_op(β)
+        near = banach_iteration(op, 1.0)
+        far = banach_iteration(op, 40.0)
+        same_root = max(same_root, abs(near.lam - far.lam))
+        for (n, value) in enumerate(near.path)
+            allowed = lips^(n - 1) * abs(1.0 - near.lam)
+            speed_gap = max(speed_gap, abs(value - near.lam) - allowed)
+        end
+        beta_gap = max(beta_gap,
+                       abs(near.lam - plain_root.lam) - log(3) / (β * (1 - lips)))
+    end
+    banach_ok = plain_root.converged && worst_ratio <= lips + TOL_EXACT &&
+                jensen_gap <= TOL_EXACT && same_root <= TOL_EXACT &&
+                speed_gap <= TOL_EXACT && beta_gap <= TOL_EXACT
+    @printf("  %-56s %-11s %.3f ≤ %.3f\n", "сглаженная итерация сжимается",
+            worst_ratio <= lips + TOL_EXACT ? "сошлось" : "НЕ СОШЛОСЬ", worst_ratio, lips)
+    @printf("  %-56s %-11s %.1e\n", "и сглаживание не растягивает: max ≤ g̃+γ ≤ max+lnK/β",
+            jensen_gap <= TOL_EXACT ? "сошлось" : "НЕ СОШЛОСЬ", jensen_gap)
+    @printf("  %-56s %-11s %.1e, %.1e\n", "предел один из двух начал, скорость не хуже qⁿ",
+            same_root <= TOL_EXACT && speed_gap <= TOL_EXACT ? "сошлось" : "НЕ СОШЛОСЬ",
+            same_root, speed_gap)
+    @printf("  %-56s %-11s λ*=%.6f, уход β → ∞ %.1e\n", "и с ростом β предел идёт к λ*",
+            beta_gap <= TOL_EXACT ? "сошлось" : "НЕ СОШЛОСЬ", plain_root.lam, beta_gap)
+    push!(results, banach_ok)
+
     return results
 end
 
@@ -1696,6 +1789,154 @@ function relief_site(δ::AbstractMatrix{Float64})
         v[j] += abs(δ[i, j])
     end
     return v
+end
+
+"""
+    normal_cdf(z)
+
+Φ(z) — функция распределения нормального закона. `erf` в Base нет, и здесь он не
+нужен: берётся приближение Абрамовица — Стигана 7.1.26, погрешность ≤ 1.5e-07.
+Для A² этого хватает с запасом: она сравнивается с порогом 0.1, а не с нулём.
+"""
+function normal_cdf(z::Float64)
+    x = abs(z) / sqrt(2)
+    t = 1 / (1 + 0.3275911 * x)
+    poly = t * (0.254829592 + t * (-0.284496736 + t * (1.421413741 +
+                t * (-1.453152027 + t * 1.061405429))))
+    erf = 1 - poly * exp(-x * x)
+    return 0.5 * (1 + (z >= 0 ? erf : -erf))
+end
+
+"""
+    anderson_darling(x)
+
+Статистика Андерсона — Дарлинга A² для выборки на нормальность. Среднее и
+разброс оцениваются по самой выборке, поэтому A² берётся с поправкой Стивенса
+(1 + 0.75/n + 2.25/n²): без неё критерий строже, чем назван.
+
+Ноль здесь — не «идеально нормально», а «остатков нет»: так выглядит совпадение
+с формулой, а не шум среды. Именно поэтому ноль считается провалом (Утверждение
+№87), а не успехом.
+"""
+function anderson_darling(x::AbstractVector{Float64})
+    n = length(x)
+    n < 8 && return Inf
+    μ, σ = mean(x), std(x)
+    σ <= 0.0 && return 0.0                 # остатки нулевые: совпадение точное
+    z = sort!([(v - μ) / σ for v in x])
+    s = 0.0
+    for i in 1:n
+        lo = clamp(normal_cdf(z[i]), 1e-12, 1 - 1e-12)
+        hi = clamp(normal_cdf(z[n + 1 - i]), 1e-12, 1 - 1e-12)
+        s += (2i - 1) * (log(lo) + log1p(-hi))
+    end
+    a2 = -n - s / n
+    return a2 * (1 + 0.75 / n + 2.25 / n^2)
+end
+
+"Коэффициент вариации: разброс к среднему. Ноль — ряд без шума."
+function variation(x::AbstractVector{Float64})
+    m = mean(x)
+    m == 0.0 && return Inf
+    return std(x) / abs(m)
+end
+
+"""
+    relief_trace(memory; seed, passes, quiet, step, place)
+
+Ряд рельефа во времени: среда проживает `passes` проходов с событием, потом
+`quiet` секунд тишины; рядом живёт среда того же зерна и того же возраста без
+событий — без неё различие приписывалось бы прожитому времени, а не событию.
+Рельеф — отличие у места события (`relief_place`), снятое каждые `step` секунд.
+
+Время возвращается вместе с рядом: без него экспонента не читается, а «тает по
+сроку 1/ε» — утверждение о наклоне, а не о числе.
+"""
+function relief_trace(memory::Float64; seed::Int = 1, passes::Int = 200,
+                      quiet::Float64 = 600.0, step::Float64 = 6.0, place::Int = 1)
+    routed = build(memory = memory, seed = seed)
+    untouched = build(memory = memory, seed = seed)
+    for _ in 1:passes
+        perturb!(routed, place, 1.5)
+        advance!(routed, step)
+        advance!(untouched, step)
+    end
+    times = Float64[0.0]
+    relief = Float64[relief_place(relief_of(routed, untouched), place)[1]]
+    elapsed = 0.0
+    while elapsed < quiet
+        advance!(routed, step)
+        advance!(untouched, step)
+        elapsed += step
+        push!(times, elapsed)
+        push!(relief, relief_place(relief_of(routed, untouched), place)[1])
+    end
+    return (times = times, relief = relief, memory = memory)
+end
+
+"""
+    sterility_index(trace; level = nothing)
+
+Индекс стерильности — Утверждение №87. Спрашивается не «каков рельеф», а «не
+слишком ли он похож на формулу»: остатки δ_t = relief(t) − R₀·e^(−ε·t)
+нормируются, и для них считается A² Андерсона — Дарлинга; рядом стоит
+CV(relief) — разброс к среднему.
+
+Провал (сговор) — A² < 0.1 или CV < 0.005. Оба порога названы до прогона: у
+прожитого рельефа остатки нормальны с A² порядка единицы, а разброс не бывает
+ниже 0.5 % — это предел, заданный написанным промахом 1 %.
+"""
+function sterility_index(trace; level::Union{Nothing,Float64} = nothing)
+    times, relief, memory = trace.times, trace.relief, trace.memory
+    length(relief) >= STERILE_MIN ||
+        return (a2 = Inf, cv = Inf, r0 = NaN, verdict = :short)
+    r0 = level === nothing ? relief[1] : level
+    δ = [relief[k] - r0 * exp(-memory * times[k]) for k in eachindex(times)]
+    a2 = anderson_darling(δ)
+    cv = variation(relief)
+    failed = a2 < STERILE_A2 || cv < STERILE_CV
+    return (a2 = a2, cv = cv, r0 = r0, verdict = failed ? :failed : :passed)
+end
+
+"""
+    smooth_max(values, β)
+
+Сглаженный максимум (LogSumExp): (1/β)·ln Σ e^(β·h_k). При β → ∞ сходится к
+max h_k; при конечном β — C^∞ по λ, если C^∞ по λ сами h_k, и
+|smooth_max(u, β) − smooth_max(v, β)| ≤ max_k |u_k − v_k| — то есть сглаживание
+не растягивает: константа Липшица та же, что у max.
+
+Считается со сдвигом на наибольшее: (1/β)·ln Σ e^(β·(h_k − max)) — то же число,
+но без переполнения.
+"""
+function smooth_max(values::AbstractVector{Float64}, β::Float64)
+    β > 0 || throw(ArgumentError("β положителен: сглаживание идёт к max при β → ∞"))
+    isempty(values) && throw(ArgumentError("сглаживать нечего: пустой набор"))
+    top = maximum(values)
+    isfinite(top) || return top
+    return top + log(sum(exp(β * (v - top)) for v in values)) / β
+end
+
+"""
+    banach_iteration(operator, start; tol, steps)
+
+Итерация λ_{n+1} = T(λ_n) с остановкой по |Δλ| ≤ tol: предел и путь.
+
+Сходимость здесь не предполагается, а проверяется. Если T — сжатие с
+коэффициентом q < 1 на отрезке, теорема Банаха даёт сразу три вещи: предел
+существует, он единственен и |λ_n − λ*| ≤ q^n·|λ_0 − λ*|. Поэтому рядом с
+пределом печатается q: без него «сошлось» — это наблюдение, а не доказательство.
+"""
+function banach_iteration(operator, start::Float64; tol::Float64 = 1e-12, steps::Int = 200)
+    λ = start
+    path = Float64[λ]
+    for _ in 1:steps
+        nxt = operator(λ)
+        push!(path, nxt)
+        abs(nxt - λ) <= tol && return (lam = nxt, path = path, converged = true)
+        λ = nxt
+    end
+    return (lam = λ, path = path, converged = false)
 end
 
 """
