@@ -269,8 +269,8 @@ rejection region with level $\alpha$ the power is exactly $\alpha$.
 
 \begin{proof}
 $\one_S=\one\in\ker\PH$, so $\PH\one_S=0$ and $\PH x=\PH(\mu\one+b\one+\sigma z)=\sigma\PH z$.
-The two hypotheses induce the same law of $\PH x$; by Neyman--Pearson no test has
-power above its size.
+The two hypotheses induce the same law of $\PH x$; by the Neyman--Pearson lemma
+\cite{neyman1933} no test has power above its size.
 \end{proof}
 
 Table~\ref{tab:kernel} is the measured shadow of the theorem: on the real
@@ -567,7 +567,8 @@ less visible, and any test ordered by the chord sees that factor in full.
 \label{sec:field}
 
 Everything above is a statement about a model. The run also puts the model on a
-measured background: PVGIS and NASA POWER irradiance and temperature for a site
+measured background: PVGIS \cite{pvgis} and NASA POWER \cite{nasa} irradiance and
+temperature for a site
 near Vladimir, four seasons, windows of 1, 24 and 168 hours, a physical
 solar-geometry forward model turning weather into a frequency offset, and the
 detector fed the resulting traces \measured. The background is not Gaussian: after
@@ -683,7 +684,8 @@ price is now written down.
 \paragraph{Next.} Three directions, in the order we intend to take them. First,
 the mean-field park with memory (M3): the same quotient argument applies to a
 coupled system with state, where the chord becomes a function of the coupling
-matrix and the anchor becomes a boundary condition. Second, external validation
+matrix, the anchor becomes a boundary condition, and the fixed point of the
+iteration is reached by a contraction \cite{banach1922}. Second, external validation
 on a park whose truth is known independently of its own reports -- a laboratory
 clock, or a second park on a different physical channel -- the only way to test
 the orientation claim instead of assuming it. Third, the adversarial model: a
@@ -740,6 +742,7 @@ generated from that JSON by \texttt{paper/make\_tables.py} and contain no typed
 numbers; \texttt{bench/REPORT.md} is regenerated deterministically from the same
 file.
 
+\small
 \begin{thebibliography}{9}
 
 \bibitem{kuramoto1975}
