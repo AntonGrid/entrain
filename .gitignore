@@ -19,6 +19,15 @@ build/
 venv/
 *.log
 
+# LaTeX (артефакты сборки; исходники и таблицы — под контролем версий)
+*.aux
+*.out
+*.toc
+*.fls
+*.fdb_latexmk
+paper/draft.pdf
+entrain-infer/paper/draft.pdf
+
 # Артефакты прогона НЕ игнорируются намеренно: они и есть результат.
 # bench/results.json, bench/REPORT.md, bench/roc.png, bench/data/ — под контролем версий.
 

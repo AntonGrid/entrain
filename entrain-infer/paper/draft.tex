@@ -1,0 +1,785 @@
+% Entrain: draft skeleton. Every number is generated from bench/results.json
+% (paper/tables/*.tex, see paper/make_tables.py); every formula is transcribed
+% from entrain_infer/theorem.py and entrain_infer/detector.py.
+%
+% Status marks: \proved (proof in the text or in theorem.py), \measured (read
+% from bench/results.json), \assumed (an assumption, not a result).
+\documentclass[10pt,twocolumn,a4paper]{article}
+
+\usepackage[margin=1.9cm]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{graphicx}
+% microtype needs scalable EC fonts, which this TeX installation lacks; the
+% draft compiles with plain Computer Modern Type1 (amsfonts) instead.
+% \usepackage{microtype}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,allcolors=blue!55!black]{hyperref}
+
+% ── status marks ────────────────────────────────────────────────────────────
+\newcommand{\proved}{\textcolor{teal!70!black}{\textsc{[proved]}}}
+\newcommand{\measured}{\textcolor{blue!70!black}{\textsc{[measured]}}}
+\newcommand{\assumed}{\textcolor{orange!80!black}{\textsc{[assumed]}}}
+\newcommand{\gap}[1]{\textcolor{red!70!black}{\textbf{[to write: #1]}}}
+
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{corollary}[theorem]{Corollary}
+\newtheorem{proposition}[theorem]{Proposition}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{assumption}[theorem]{Assumption}
+\theoremstyle{remark}
+\newtheorem{remark}[theorem]{Remark}
+
+\newcommand{\PH}{P_{H}}
+\newcommand{\one}{\mathbf{1}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\bmin}{b_{\min}}
+\newcommand{\taur}{\tau}
+
+\title{\bfseries Entrain: a gauge symmetry, a chord, and a one-sided bound\\
+\large What a park of oscillators can and cannot say about a lying clock}
+
+\author{ENRG project\thanks{Correspondence: \texttt{enrg.project@gmail.com}.
+Author list and affiliations to be finalized \gap{authors, affiliation, ORCID}.}}
+\date{Draft --- \today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+A park of $N$ oscillators keeps time without an external clock: every node reads
+its own frequency, and the only thing the park can compare is the nodes against
+each other. We ask what such a park can prove about a node that lies, and what it
+provably cannot. The detector is a generalized likelihood ratio test on
+studentized contrasts, with its threshold taken from a declared false-alarm risk
+$\alpha$ rather than from a tuned constant; on a measured background its power at
+$\alpha=10^{-3}$ matches the closed form to the third decimal and its ROC area is
+$0.991$--$0.993$ \measured. What follows is a statement about the observation, not
+about the test: the park sees the quotient $\R^N/\mathrm{span}\{\one\}$, so a lie
+enters only through its contrast $\PH\one_S$, whose length is the chord
+$\sqrt{k(N-k)/N}$ \proved. Three consequences. A coalition of all $N$ nodes is
+invisible at any bias and any power; a coalition of $k>N/2$ is detected while the
+honest minority is named; the orientation of a split -- who lies, the $k$ or the
+$N-k$ -- is not estimable, because the two descriptions are the same vector.
+Dilution obeys a ceiling $\bmin(k)\le\bmin(1)\,(N-1)/\max(k,N-k)$ with equality
+only at the two ends \proved, and the only converse is an anchor, which buys
+immunity to large coalitions at the price of a $2.4\times$ ($N=10$) to $4.3\times$
+($N=30$) worse floor against a lone liar \measured. Every claim is marked as
+proved, measured, or assumed, and we name the places where the model, not the
+mathematics, is the weak link.
+\end{abstract}
+
+\section{Introduction}
+\label{sec:intro}
+
+Distributed systems that keep time by consensus have a structural problem: the
+thing they most need to verify -- the clock -- is the one thing no member can
+check against anything external. A solar inverter, a substation relay, a sensor
+in a park: each reports a frequency, and the report is meaningful only relative
+to the other reports. If one node drifts, the park sees that \emph{something}
+moved. If one node lies, the park sees exactly the same thing. The question of
+this paper is not how to detect drift, but what a park can \emph{prove} about a
+lie when the only observable is the park itself.
+
+We take the classical route and make it honest about its assumptions. The
+observable is a matrix of per-node frequencies over a window; the test is a GLRT
+on studentized contrasts, in the lineage of \cite{lehmann2005}; the threshold is
+a quantile of the null at a declared risk $\alpha$, computed once per $N$ and
+printed next to the Bonferroni bound, so that an operator can read the
+false-alarm price in the same units in which the detection claim is made
+\proved. This engineering half is measured rather than asserted: on real
+background traces the achieved false-positive rate tracks $\alpha$ and the
+achieved power tracks the closed form to the third decimal
+(\S\ref{sec:glrt}, Table~\ref{tab:roc}).
+
+The mathematical half is different in kind, and it is the reason for this paper.
+Once the detector is written as a function of the contrasts, a symmetry appears
+that no amount of data can break: adding the same number to every node moves
+nothing. This is not an artefact of studentization; it says that the observation
+lives in a quotient space of dimension $N-1$, and every question the park can
+answer is a question about that quotient. In it:
+
+\begin{enumerate}
+\item A coalition of all $N$ nodes agreeing on one bias is \emph{invisible} at
+      any bias, any window, any power. There is no threshold to lower and no
+      sample to collect: alternative and null coincide
+      (Theorem~\ref{thm:kernel}).
+\item The visibility of a coalition is a chord,
+      $c(S)=\|\PH\one_S\|=\sqrt{k(N-k)/N}$: zero at the ends, maximal at $N/2$
+      (Lemma~\ref{lem:chord}). Detectability is a property of the \emph{split},
+      not of the lie.
+\item For $k>N/2$ the largest statistics belong to the honest minority: the
+      detector fires correctly and names the wrong nodes
+      (\S\ref{sec:inversion}). This is a statement about the statistic,
+      confirmed on the measured background, not an implementation bug.
+\item The orientation of a split -- ``$k$ lied by $+b$'' versus ``$N-k$ lied by
+      $-b$ while the park clock is off by $+b$'' -- is not estimable, because the
+      two worlds are one vector $x$. A majority vote is a choice of gauge, not an
+      inference (Lemma~\ref{lem:orientation}).
+\item Dilution obeys a ceiling, and the ceiling is reached only at the two ends;
+      between them the bound is strict, and we prove the direction
+      (Lemma~\ref{lem:bound}).
+\item The only converse is to pin the gauge by hand: declare one node an anchor.
+      The anchored floor falls with $k$ while the relative one grows, so the
+      anchor is a trade, worth its assumption only against coalitions above
+      $k^\ast\approx\sqrt{N}$ (\S\ref{sec:anchor}).
+\end{enumerate}
+
+None of the six is a claim about a better algorithm. They are claims about the
+information in the observation, and they bind any algorithm that respects the
+gauge, including ones not yet written. That is what makes them worth stating, and
+why they come with a list of what the model does not cover
+(\S\ref{sec:limits}).
+
+\medskip
+\noindent\textbf{What is proved, what is measured, what is assumed.} Claims are
+marked throughout. \proved{} means a proof in the text or a closed-form identity
+in \texttt{theorem.py}, with no Monte Carlo and no seed. \measured{} means a
+number from the frozen run \texttt{bench/results.json}, reproducible to the byte
+(Appendix~\ref{app:repro}). \assumed{} means an assumption of the model: Gaussian
+stationary noise, a single bias $b$ for the whole coalition, a clock that drifts
+rather than jumps. The distinction matters -- the symmetry results survive any
+noise model, the quantitative ones do not.
+
+\section{Model}
+\label{sec:model}
+
+\begin{definition}[Park]
+\label{def:park}
+A park of $N\ge2$ oscillators is a vector $x\in\R^N$, $x_i$ the frequency of
+node $i$ read over a window of $T$ samples. Under $H_0$ the nodes share a common
+drift $\mu$ and independent noise: $x=\mu\one+\sigma z$, $z_i\sim\mathcal N(0,1)$.
+Under $H_1$ a set $S\subseteq\{1,\dots,N\}$ of $k=|S|$ nodes carries one bias,
+\begin{equation}
+x=\mu\one+b\,\one_S+\sigma z .
+\label{eq:h1}
+\end{equation}
+\end{definition}
+
+Three things about \eqref{eq:h1} are assumptions and nothing more \assumed. The
+noise is Gaussian and stationary over the window: the measured background is not
+strictly so, and \S\ref{sec:field} reports the excess kurtosis left after
+detrending, up to $1.689$ in one cell \measured. The bias is a single number for
+the whole coalition: a coalition split into two opposite biases is a different,
+weaker model, and \S\ref{sec:anchor} shows why. The lie is a drift, not a jump: a
+timestamp step is a common-mode shift and is invisible to a frequency reading for
+the same reason as Theorem~\ref{thm:kernel}.
+
+\begin{remark}[What the park observes]
+The vector $x$ is never available in absolute terms: only differences between
+nodes carry information about $\mu$ or $b$. Formally the observation is the image
+of $x$ under the orthogonal projection
+\begin{equation}
+\PH v = v-\bar v\,\one,\qquad \bar v=\frac1N\sum_j v_j,
+\label{eq:ph}
+\end{equation}
+i.e.\ a point of the hyperplane $H=\one^{\perp}\cong\R^{N-1}$. The statistic of
+\S\ref{sec:glrt} is a function of $\PH x$ alone, and so is every statistic that
+respects the gauge; \S\ref{sec:theorem} makes this precise.
+\end{remark}
+
+\section{The GLRT detector}
+\label{sec:glrt}
+
+The test is the classical one. Studentize the contrasts of \eqref{eq:ph},
+\begin{equation}
+t_i=\frac{N x_i-\sum_j x_j}{\sqrt{N(N-1)}}=\frac{(\PH x)_i}{\|\PH e_i\|},
+\label{eq:stat}
+\end{equation}
+and reject $H_0$ for a node when $|t_i|$ exceeds $\taur$. Under $H_0$ the vector
+$t$ is exchangeable with unit variance and pairwise correlation $-1/(N-1)$; under
+$H_1$ with a lone liar the offending node is noncentral,
+\begin{equation}
+\mathbb E\,t_i=\frac{b}{\sqrt{N-1}}\quad (i\in S),\qquad
+\mathbb E\,t_i=0\quad\text{otherwise.}
+\label{eq:tmean1}
+\end{equation}
+
+\paragraph{Threshold as a declared risk.} $\taur$ is the $(1-\alpha)$ quantile of
+$\max_i|t_i|$ under $H_0$, computed by Monte Carlo once per $N$
+(200\,000 null draws, seed 20261030) and printed next to the Bonferroni value
+$\Phi^{-1}(1-\alpha/2N)$; the run checks the two against each other. At
+$\alpha=10^{-3}$ the measured thresholds are $\taur=3.875$, $4.154$, $4.424$ for
+$N=10,30,100$ \measured. The point is not the number but its units: $\alpha$ is
+the share of honest parks that will be flagged, so the operator pays a stated
+price instead of inheriting a constant. Table~\ref{tab:roc} shows the achieved
+false-positive rate tracking $\alpha$ and the achieved power matching the closed
+form.
+
+\paragraph{Minimum detectable lie.} Because \eqref{eq:stat} is scale invariant,
+$\bmin$ is linear in $\sigma$:
+\begin{equation}
+\bmin(N,\sigma)=\sigma\,c(N),\qquad c(N)=\bmin(N,\sigma=1),
+\label{eq:bmin}
+\end{equation}
+with $c(10)=5.420$, $c(30)=5.513$, $c(100)=5.740$ \measured{} at $\alpha=10^{-3}$
+and target power $0.9$. One coefficient per $N$ therefore serves every season,
+because the test is a function of $b/\sigma$. The closed-form companion,
+$\bmin^{\mathrm{an}}=({\taur}+z_{1-\beta})\,\sigma\sqrt{1+1/(N-1)}$, agrees with
+the bisected value to $0.3\%$; the gap is the difference between the Monte-Carlo
+quantile and the bisection on Monte-Carlo power \measured.
+
+\paragraph{ROC.} Table~\ref{tab:roc} gives four operating points per $N$ at
+$T=24$~h on the July background and the area under the measured ROC curve:
+$0.993$, $0.991$, $0.991$ for $N=10,30,100$ \measured. Two regularities are worth
+naming. The curve is flat in $T$ -- the statistic depends on $b/\sigma$ and on
+$N$, while $T$ enters only through the estimate of $\sigma$ -- and it degrades
+slowly in $N$ at fixed $b/\sigma$, because the maximum of $N$ correlated unit
+normals grows like $\sqrt{2\log N}$ while the noncentrality of one liar grows
+like $\sqrt{N-1}$. A larger park does not help against a single liar;
+\S\ref{sec:anchor} shows the one setting in which it does.
+
+\input{tables/tab_roc}
+
+\gap{implementation paragraph: the estimator of the common drift and of $\sigma$
+(window, night fraction $0.15$, one clock per park) and the reason
+\eqref{eq:stat} does not depend on the estimate of $\mu$.}
+
+\section{The gauge symmetry}
+\label{sec:theorem}
+
+\begin{lemma}[Exchange]
+\label{lem:gauge}
+For every $c\in\R$ and every $x\in\R^N$, $t(x+c\one)=t(x)$; equivalently, $t$ is
+a function of $\PH x$ alone, and $\PH$ is the orthogonal projector onto
+$\one^{\perp}$.
+\end{lemma}
+
+\begin{proof}
+$t$ is built from $x_i-\bar x$, and $\bar x$ absorbs $c$; in matrix form
+$t=\PH x/\sqrt{\PH}$-normalized, so $t(x+c\one)=t(x)$. Since $\PH$ is symmetric
+and idempotent, $\PH$ is the orthogonal projector onto $\mathrm{span}\{\one\}^\perp$;
+its rank is $N-1$ and its kernel is $\mathrm{span}\{\one\}$.
+\end{proof}
+
+The lemma is trivial, and that is the point: the triviality is a symmetry, not a
+technicality. The observation is a point of a quotient space, so a lie that
+differs from the null only by a vector in the kernel is not a lie the park can
+see -- not a hard detection problem, an empty one.
+
+\begin{theorem}[The kernel is silent]
+\label{thm:kernel}
+If $S=\{1,\dots,N\}$ (every node lies by the same $b$), then
+$\PH\one_S=\PH\one=0$, so $x$ of \eqref{eq:h1} and $x$ of $H_0$ with
+$\mu\to\mu+b$ are the same observation, $t\equiv0$, and for every measurable
+rejection region with level $\alpha$ the power is exactly $\alpha$.
+\end{theorem}
+
+\begin{proof}
+$\one_S=\one\in\ker\PH$, so $\PH\one_S=0$ and $\PH x=\PH(\mu\one+b\one+\sigma z)=\sigma\PH z$.
+The two hypotheses induce the same law of $\PH x$; by Neyman--Pearson no test has
+power above its size.
+\end{proof}
+
+Table~\ref{tab:kernel} is the measured shadow of the theorem: on the real
+background with every node lying at $b/\sigma=1,5,20$, the recovered bias is
+$\hat b_{\text{eff}}/\sigma\sim10^{-17}$ and detection stays at $0.000$
+\measured. Increasing $b$ cannot help, because the theorem says the direction of
+increase is in the kernel.
+
+\input{tables/tab_kernel}
+
+
+\begin{remark}[What the theorem does \emph{not} say]
+It does not say that a lying node is undetectable -- only that a
+\emph{unanimous} lie is. It does not depend on the noise being Gaussian: any
+law invariant to common-mode shifts gives the same conclusion. And it does not
+depend on $t$ being the GLRT: any statistic measurable with respect to $\PH x$
+obeys it. This is why we call it a statement about the observation.
+\end{remark}
+
+\section{The chord: how visible a split is}
+\label{sec:chord}
+
+Theorem~\ref{thm:kernel} is the degenerate end of a family. What the park sees of
+a coalition is the projection of its indicator, and the length of that projection
+is the only thing about the coalition that enters the data.
+
+\begin{lemma}[Chord]
+\label{lem:chord}
+For $S$ with $|S|=k$,
+\begin{equation}
+\begin{aligned}
+c(S)^2&=\|\PH\one_S\|^2=\frac{k(N-k)}{N},\\
+c(S)&=\sqrt{\frac{k(N-k)}{N}} .
+\end{aligned}
+\label{eq:chord}
+\end{equation}
+$c$ is symmetric under $k\mapsto N-k$, vanishes at $k=0$ and $k=N$, and is
+maximal at $k=N/2$.
+\end{lemma}
+
+\begin{proof}
+$\|\one_S\|^2=k$ and $\langle\one_S,\one\rangle=k$, so
+$\|\PH\one_S\|^2=\|\one_S\|^2-\frac1N\langle\one_S,\one\rangle^2=k-k^2/N$.
+The rest is calculus on $k(N-k)$.
+\end{proof}
+
+The consequence is a reparametrisation of the detection problem: a coalition of
+$k$ liars lying by $b$ is the same observation as one liar lying by
+$b\,c(S)/c(\{1\})=b\sqrt{k(N-k)/(N-1)}$, up to the second-order question of how
+the test is ordered (\S\ref{sec:bound}). Detectability grows with the
+\emph{product} $k(N-k)$, not with $k$: a coalition of nine in a park of ten is as
+visible as a single liar, and a coalition of five is the most visible thing that
+can happen in a park of ten (Table~\ref{tab:chord}).
+
+\begin{proposition}[Per-node means]
+\label{prop:means}
+Under \eqref{eq:h1}, for $i\in S$ and $j\notin S$,
+\begin{equation}
+\mathbb E\,t_i=\frac{b\,(N-k)}{\sqrt{N(N-1)}},\qquad
+\mathbb E\,t_j=-\frac{b\,k}{\sqrt{N(N-1)}} .
+\label{eq:means}
+\end{equation}
+\end{proposition}
+
+\begin{proof}
+$(\PH\one_S)_i=1-k/N=(N-k)/N$ for $i\in S$ and $-k/N$ for $j\notin S$; divide by
+$\|\PH e_i\|=\sqrt{(N-1)/N}$.
+\end{proof}
+
+Equation~\eqref{eq:means} contains M1's dilution law and its inversion in one
+line. For $k\le N/2$ the colluders carry the larger mean and the detector's
+answer is correct up to the sign; the measured power of a lone liar is recovered
+at $k=N-1$ (Table~\ref{tab:measured}, $N=10$, $k=9$: power $0.897$ against
+$0.899$ for $k=1$) \measured. For $k>N/2$ the honest minority carries the larger
+mean and the detector names them -- the subject of \S\ref{sec:inversion}.
+
+\input{tables/tab_chord}
+
+\begin{remark}[The chord test]
+\label{rem:chordtest}
+If the coalition is known in advance -- an operator's own devices, say -- the
+efficient test is not the node maximum but the two-cluster contrast
+\begin{equation}
+z=\frac{\bar x_S-\bar x_{S^c}}{\sigma\sqrt{1/k+1/(N-k)}}
+\ \sim\ \mathcal N\!\left(\frac{b\,c(S)}{\sigma},\,1\right),
+\label{eq:chordtest}
+\end{equation}
+whose noncentrality is exactly the chord. Its minimum detectable lie is
+$\bmin^{\mathrm{ch}}=({\taur}+z_{1-\beta})\sigma/c(S)$, finite for every $k<N$
+and infinite at $k=N$ -- Theorem~\ref{thm:kernel} as a division by zero. The gap
+between \eqref{eq:chordtest} and $\max_i|t_i|$ is a \emph{design} gap, not an
+information gap: both are functions of $\PH x$, but one is ordered by the
+statistic that carries the chord, the other by the largest coordinate. The run
+measures both side by side: at $k=N/2$ the chord power at $b_1$ is $1.000$ where
+the node maximum gives $0.793$ ($N=10$) \measured.
+\end{remark}
+
+\section{Inversion and orientation}
+\label{sec:inversion}
+
+\begin{corollary}[Inversion]
+\label{cor:inversion}
+By \eqref{eq:means}, $\mathbb E\,t_i<\mathbb E\,t_j$ for $i\in S$, $j\notin S$
+whenever $k>N/2$: the largest statistics of the park belong to the honest
+minority, and a detector that flags the largest $|t|$ names the honest.
+\end{corollary}
+
+This is where the engineering reading and the mathematical reading part company.
+An operator sees a park in which the detector fired and the flagged nodes are the
+ones that moved. The mathematics says the flagged nodes are $N-k$, the smaller
+side, and that the side with $k$ is the one that moved. Both statements are true
+of the same numbers; only the second is about the data.
+
+The measured background does not soften this. In Table~\ref{tab:field}, past
+$k>N/2$ detection stays at $1.000$ while localisation -- the share of repetitions
+whose largest $|t|$ sits on a colluder -- falls to $0.000$: at $N=10$, $k=9$, the
+detector fires in $100\%$ of repetitions and names an honest node in $100\%$ of
+them \measured. A confident detector, right about the existence of a split and
+wrong about its direction.
+
+\begin{lemma}[Orientation is in the kernel]
+\label{lem:orientation}
+For every $S$, $b$ and $\mu$,
+\begin{equation}
+\mu\one+b\one_S=(\mu+b)\one-b\one_{S^c}
+\label{eq:orientation}
+\end{equation}
+identically, as vectors in $\R^N$. The two worlds -- ``$k$ nodes lie by $+b$''
+and ``$N-k$ nodes lie by $-b$ while the park clock is off by $+b$'' -- induce the
+same law of the observation, hence the same $t$, the same flagged node, and the
+same $\bmin$.
+\end{lemma}
+
+\begin{proof}
+$\one_S+\one_{S^c}=\one$; expand the right-hand side.
+\end{proof}
+
+So the orientation of a split is not a hard estimation problem: it is not in the
+data. Every statement of the form ``the majority is honest'' is a choice of gauge,
+and every vote is a convention for fixing it. This is the same freedom that makes
+a constant timestamp offset invisible to a frequency reading; there the gauge is
+fixed by an external time reference, here by a decision about whom to believe. The
+run checks \eqref{eq:orientation} on 15 cells: apart from floating point, the
+reading gap and the statistic gap are zero and the flagged node is the same in
+both worlds \proved.
+
+\begin{remark}[What a vote can and cannot buy]
+A vote among nodes is a gauge choice, and a gauge choice can be wrong. What a vote
+\emph{can} do is define $S$ well enough for the chord test of
+Remark~\ref{rem:chordtest} to be run with roles assigned: given a candidate
+coalition, the statistic says whether the park is split along it, not which side
+is lying. Anything stronger needs information from outside the park -- an anchor
+(\S\ref{sec:anchor}), a trusted time reference, or a physical model of who can
+drift in which direction.
+\end{remark}
+
+\section{The anchor as a trade}
+\label{sec:anchor}
+
+The only way out is to stop asking a question the observation cannot answer.
+Declare one node's clock true; then
+\begin{equation}
+y_i=x_i-x_a,\qquad i\neq a,
+\label{eq:anchor}
+\end{equation}
+has a \emph{known} mean under $H_0$, and the question stops being ``which node
+deviates from the others'' (a relative question, $N-1$ contrasts) and becomes
+``does the rest deviate from the anchor'' (an absolute one).
+
+\begin{proposition}[Anchored test: the i.i.d.\ convention]
+\label{prop:anchor}
+Let $y\in\R^{N-1}$ be the standardised anchored readout, $y_i\sim\mathcal N(0,\sigma^2)$
+independent, and $s=\sqrt{N-1}\,\bar y/\sigma$. Under $H_0$, $s\sim\mathcal N(0,1)$
+exactly: no null table, no $N$-dependent quantile, because the mean under $H_0$ is
+known rather than profiled. With $k$ liars of the same sign past the anchor,
+\begin{equation}
+\delta=\frac{b\,k}{\sqrt{N-1}},\qquad
+\bmin^{\mathrm{anc}}=\frac{({\taur}+z_{1-\beta})\,\sigma\sqrt{N-1}}{k},
+\label{eq:anchored}
+\end{equation}
+finite for every $k$ -- including $k=N-1$, where the relative test is as
+insensitive as against a lone liar \emph{and} names the honest node, while the
+anchor is at its best, $\bmin^{\mathrm{anc}}=({\taur}+z_{1-\beta})\sigma/\sqrt{N-1}$.
+\end{proposition}
+
+\begin{proof}
+Under $H_0$ each $y_i$ is centred, so $\bar y$ has mean $0$ and variance
+$\sigma^2/(N-1)$; $\sqrt{N-1}\,\bar y/\sigma$ is standard normal. Under $H_1$ with
+$k$ of the $N-1$ coordinates shifted by $b$, $\mathbb E\bar y=bk/(N-1)$, hence
+$\delta=bk/\sqrt{N-1}$. Inverting $1-\Phi(\taur-\delta)=1-\beta$ gives
+\eqref{eq:anchored}.
+\end{proof}
+
+\begin{remark}[Scaling convention, and a discrepancy we did not hide]
+\label{rem:scaling}
+\eqref{eq:anchored} presumes $y$ is a readout whose own noise is $\sigma$ --
+the convention of the bench, which draws $y$ directly and adds the lie.
+If instead $y_i=x_i-x_a$ is built from the park of \eqref{eq:h1}, the coordinates
+are correlated: $\operatorname{Var}(y_i)=2\sigma^2$ and
+$\operatorname{Cov}(y_i,y_j)=\sigma^2$, so
+$\operatorname{Var}(\bar y)=\sigma^2(1/(N-1)+1)=\sigma^2N/(N-1)$ and the statistic
+$\sqrt{N-1}\,\bar y/\sigma$ has variance $N$, not $1$ \proved. The correctly normalised readout is
+$\bar y\sqrt{(N-1)/N}/\sigma$, and with $\sigma_p\equiv\sigma_{\mathrm{park}}$ the
+anchored noncentrality becomes
+\begin{equation}
+\begin{aligned}
+\delta_{\mathrm{park}}&=\frac{b\,k}{\sigma_p\sqrt{N(N-1)}},\\
+\bmin^{\mathrm{anc,park}}&=\frac{({\taur}+z_{1-\beta})\,\sigma_p\sqrt{N(N-1)}}{k},
+\end{aligned}
+\label{eq:anchored-park}
+\end{equation}
+a factor $\sqrt{N}$ worse than \eqref{eq:anchored} at the same $b$, while still
+linear in $1/k$ and still finite at $k=N-1$ \proved. The crossover $k^\ast$, the
+sign of the trade, and the ordering of the two tests are unchanged; the
+\emph{price} of the anchor against a lone liar is larger than
+Table~\ref{tab:anchor} reports. \gap{decide the convention, then make
+\texttt{theorem.anchor\_statistic} agree with it (it currently returns a statistic
+of variance $N\sigma^2$ on park data) and regenerate Table~\ref{tab:anchor} in
+both conventions.}
+\end{remark}
+
+The anchored floor falls with $k$ where the relative one grows, and the anchored
+test needs no multiplicity correction (one statistic, not $N$). The two curves
+cross once, and where they cross is the whole governance question.
+
+\input{tables/tab_anchor}
+
+
+\section{The one-sided dilution bound}
+\label{sec:bound}
+
+The chord is the information; the node-maximum statistic is what M1 uses, and the
+two are ordered differently. What the run measured for the node maximum -- and
+what M1 reported as a dilution law -- needs a proof of its direction, and that is
+this section.
+
+\begin{lemma}[The bound is a ceiling]
+\label{lem:bound}
+Let $m=\max(k,N-k)$, $s=\min(k,N-k)$ and $r=(N-1)/m$. Then
+\begin{equation}
+\frac{\bmin(k)}{\bmin(1)}\ \le\ r=\frac{N-1}{\max(k,N-k)},
+\label{eq:bound}
+\end{equation}
+with equality if and only if $k\in\{1,N-1\}$; for $2\le k\le N-2$ the inequality
+is strict.
+\end{lemma}
+
+\begin{proof}
+Take $k\le N/2$ without loss: the map $k\mapsto N-k$ is symmetric, because
+$c(S)=c(S^c)$ by Lemma~\ref{lem:chord}. Raise the coalition's lie to
+$b'=b\,r$. Its $k$ largest statistics sit at the noncentrality a lone liar has at
+$b$:
+\begin{equation}
+\mathbb E\,t_i=b'\,\frac{N-k}{\sqrt{N(N-1)}}=b\sqrt{\frac{N-1}{N}},
+\label{eq:lemma-mean}
+\end{equation}
+while the $N-k$ nodes on the other side sit at $-b'k/\sqrt{N(N-1)}$. The threshold
+$\taur$ is the same in both worlds, so for the target power of one liar
+\begin{equation}
+1-(1-p)^{m}\le\mathrm{power}(\text{coalition at }b')
+\iff \bmin(k)\le b\,r ,
+\label{eq:lemma-power}
+\end{equation}
+where $p$ is the chance that one node at that noncentrality crosses $\taur$ and
+$m$ the number of nodes sharing it. Equality needs $m=1$, i.e.\ $k=N-1$; at
+$k=1$ we have $r=1$ and the configuration is the same one on both sides. For
+$2\le k\le N-2$ we have $m\ge2$ and
+$(1-p)^{m-1}<(1-\alpha)^{N-1}$: $m$ nodes sharing the maximal noncentrality fire
+more often than the one node that alone sets $\bmin(1)$, so the inequality is
+strict.
+\end{proof}
+
+The lemma is stated one-sidedly on purpose, and the run reports the slack as a
+column instead of hiding it behind a tolerance. Table~\ref{tab:measured} shows
+both: the predicted ceiling, the measured ratio, and a ``bound'' column that is
+\texttt{yes} in every cell \measured. Two rows deserve comment. At $k=2$, $N=10$
+the measured ratio is $0.937$ against a ceiling of $1.125$: the coalition is
+\emph{easier} to catch than one liar, because two statistics share the maximal
+noncentrality and the maximum over two is larger than either. At the ends the
+ratio is $1.000$ up to the bisection tolerance ($1.002$ at $k=1$, $1.003$ at
+$k=9$), which is what the lemma predicts.
+
+A second, sharper statement is measured in the same table: the chord test of
+Remark~\ref{rem:chordtest} reaches power $1.000$ at $b_1$ for every interior $k$
+while the node maximum reaches $0.793$--$0.954$ \measured. The information is
+there; the node maximum is simply not the statistic that carries it. This is why
+the dilution law of M1 is stated for the node maximum and not for the park: a
+coalition of $k$ is not $k$ times less visible, it is $\sqrt{k(N-k)/(N-1)}$ times
+less visible, and any test ordered by the chord sees that factor in full.
+
+\input{tables/tab_measured}
+
+\section{Field validation}
+\label{sec:field}
+
+Everything above is a statement about a model. The run also puts the model on a
+measured background: PVGIS and NASA POWER irradiance and temperature for a site
+near Vladimir, four seasons, windows of 1, 24 and 168 hours, a physical
+solar-geometry forward model turning weather into a frequency offset, and the
+detector fed the resulting traces \measured. The background is not Gaussian: after
+detrending, the excess kurtosis of the residual is between $-0.315$ and $1.689$
+across the 32 measured cells, with 16 of them non-finite (degenerate phase cells)
+\measured. The largest value, $1.689$, is in the July 24-hour offset cell -- a
+heavy-tailed day, and exactly the cell the ROC is drawn on.
+
+\begin{remark}[What survives non-Gaussianity]
+The symmetry results do not care: Theorem~\ref{thm:kernel},
+Lemma~\ref{lem:chord} and Lemma~\ref{lem:orientation} are statements about the
+linear map $\PH$, and hold for any noise law. The quantitative ones do care, and
+the run prices them: at $\alpha=10^{-3}$ the declared risk is paid as
+$0.0008$--$0.00105$ of honest parks flagged \measured{}, i.e.\ the tail of the
+measured background is close enough to Gaussian at the $3.9\sigma$ level that the
+declared risk is not a fiction -- but it is a measured claim, not a theorem.
+\end{remark}
+
+Table~\ref{tab:field} is the collusion experiment on the real background: a
+coalition of $k$ nodes lies by $b/\sigma=8$ in a park of $N$, 40 repetitions per
+cell, seasons January and July. Two rows summarise the paper. At $N=10$, $k=9$:
+detection $1.000$, localisation $0.000$ -- the detector fires every time and
+names the honest node every time, which is
+Corollary~\ref{cor:inversion} on weather rather than on white noise. At $N=10$,
+$k=10$: detection $0.000$ -- a unanimous park is silent, which is
+Theorem~\ref{thm:kernel} on weather. In between, localisation follows the
+predicted side: \texttt{colluder} for $k<N/2$, \texttt{tie} at $k=N/2$,
+\texttt{honest} above it \measured.
+
+The window matters as much as the theory. At $T=24$~h the background is
+non-stationary enough that the estimate of $\sigma$ absorbs the weather and the
+measured colluder gain collapses to $\approx0.005$ instead of the predicted
+$0.99$; at $T=168$~h the same code recovers the prediction \measured. We report
+the 168-hour window for the theorem and both windows for the ROC, because a
+theory validated only where it is convenient is not validated.
+
+
+\input{tables/tab_field}
+
+\section{Discussion: what is proved, and where the model is the weak link}
+\label{sec:limits}
+
+The results split cleanly by epistemic status, and the split is the most useful
+thing in the paper.
+
+\paragraph{Proved, model-free.} Lemma~\ref{lem:gauge}, Theorem~\ref{thm:kernel},
+Lemma~\ref{lem:chord}, Proposition~\ref{prop:means},
+Lemma~\ref{lem:orientation} and Lemma~\ref{lem:bound} are statements about the
+linear map $\PH$ and about maxima of correlated normals. They do not assume
+Gaussian noise, a particular estimator, a window length, or a threshold rule. If
+the observation is the park and the park is read as contrasts, they hold.
+
+\paragraph{Measured, model-conditional.} The power, the ROC, the coefficient
+$c(N)$, the anchored prices and every number in Tables~\ref{tab:measured} and
+\ref{tab:field} depend on \eqref{eq:h1} and on a background that is not Gaussian.
+The excess kurtosis of the measured background reaches $1.689$ \measured{} in the
+very cell on which the ROC is drawn; the declared risk is achieved there to within
+$5\%$ of $\alpha$, which we report as an empirical fact about this background and
+not as a guarantee about another.
+
+\paragraph{Assumed, and therefore the weak link.} Four assumptions carry the
+quantitative claims, and each has a known failure mode. (i) \emph{One bias per
+coalition.} A coalition that splits into two opposite biases cancels in the
+anchored mean and shrinks the chord; a clever coalition knows this, and
+\S\ref{sec:conclusion} names it as the next statement to prove. (ii) \emph{A clock
+that drifts, not one that jumps.} A timestamp step is a common-mode shift,
+invisible to a frequency reading -- Theorem~\ref{thm:kernel} reached from the
+other side. (iii) \emph{A stationary window.} At 24 hours the estimate of $\sigma$
+absorbs weather and the measured colluder gain collapses; the theorem does not
+fail, the estimator does. (iv) \emph{No substitution of history.} A node that
+rewrites its own past is not covered by any statement here: the park compares
+nodes, and a node that lies consistently in the past is, observationally, a node
+with a different history -- the gauge again, one level up.
+
+\paragraph{Relation to Kuramoto.} The classical reading of a park of oscillators
+\cite{kuramoto1975} describes how coupling pulls frequencies into a common rhythm;
+the order parameter measures \emph{how much} the park agrees. Our statement is
+orthogonal and complementary: the order parameter is a function of the contrasts
+and is therefore invariant to the common mode, which is exactly why a unanimous
+lie cannot move it. Entrainment theory tells us when a park agrees; the gauge
+symmetry tells us that agreement certifies nothing about the truth of the agreed
+frequency. Together they give the operational reading of \S\ref{sec:anchor}:
+agreement is free, and certification costs an anchor.
+
+\paragraph{Relation to classical testing.} The GLRT is a vehicle here, not an
+optimum: by Lemma~\ref{lem:chord} every admissible test sees the same chord, and
+Remark~\ref{rem:chordtest} shows that a test ordered by the chord dominates one
+ordered by the node maximum at interior $k$. Classical theory \cite{lehmann2005}
+tells us the GLRT is efficient against a \emph{single} alternative; a coalition is
+not one, and Table~\ref{tab:measured} is the price of that mismatch.
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+A park of oscillators can detect that it is split, and it cannot tell which side
+is lying. That is not a limitation of the detector: it is the shape of the
+observation, and it is provable. The provable part is small, sharp and free of
+assumptions -- a projection, a chord, a kernel, a one-sided ceiling -- and it
+constrains every future algorithm, including the ones that will replace ours. The
+measured part is large, conditional and honest about it: a declared risk that is
+paid, a ROC that does not improve with the size of the park, an inversion that
+fires on weather exactly as it fires on white noise.
+
+The practical reading is a trade, and it is the one we would defend in
+deployment. If the threat is a few liars, use the plain GLRT and keep the park
+flat: no node is privileged, and the floor against one liar is the best the park
+can offer. If the threat is a majority, the park cannot help and no amount of data
+will change that; the only move is to declare an anchor and pay $2.4\times$
+($N=10$) to $4.3\times$ ($N=30$) worse sensitivity against the few \measured. An
+anchor is not a better clock. It is an assumption, bought at a price, and the
+price is now written down.
+
+\paragraph{Next.} Three directions, in the order we intend to take them. First,
+the mean-field park with memory (M3): the same quotient argument applies to a
+coupled system with state, where the chord becomes a function of the coupling
+matrix and the anchor becomes a boundary condition. Second, external validation
+on a park whose truth is known independently of its own reports -- a laboratory
+clock, or a second park on a different physical channel -- the only way to test
+the orientation claim instead of assuming it. Third, the adversarial model: a
+coalition that splits its bias to minimise the chord. The theorem says such a
+coalition is doing the only thing that helps, and the size of the help is
+computable; that is the next statement to prove.
+
+\appendix
+
+\section{Code}
+\label{app:code}
+
+The mathematics of this paper is \texttt{entrain\_infer/theorem.py} (436 lines):
+\texttt{contrast}, \texttt{chord}, \texttt{chord\_ratio},
+\texttt{colluder\_t\_mean}, \texttt{honest\_t\_mean}, \texttt{b\_eff\_factor},
+\texttt{node\_gain}, \texttt{b\_min\_ratio}, \texttt{flagged\_side},
+\texttt{two\_worlds}, \texttt{anchor\_reading}, \texttt{anchor\_statistic},
+\texttt{anchor\_noncentrality}, \texttt{anchor\_b\_min}, \texttt{anchor\_power},
+\texttt{anchor\_crossover}, \texttt{chord\_statistic}, \texttt{chord\_b\_min},
+\texttt{chord\_power}. It is closed form throughout: no Monte Carlo, no seed, no
+threshold. The detector and the estimator are \texttt{detector.py} and
+\texttt{estimator.py}; the bench that produced every number here is
+\texttt{bench.py} with the report in \texttt{report.py}.
+
+\section{Tests}
+\label{app:tests}
+
+27 tests cover the theorem module (\texttt{tests/test\_theorem.py}, 335 lines) and
+74 tests in total cover the package: the algebra of the projection, the chord
+identity, the per-node means, the two worlds, the anchor, the bound and its
+attainment, the kernel on the noise model and on the real background. The two that
+matter most for \S\ref{sec:bound} are
+\path{test_the_bound_is_attained_only_at_the_ends} (the ratio equals its ceiling
+at $k=1$ and $k=N-1$, strictly below it in between) and
+\path{test_a_coalition_at_the_bound_is_at_least_as_loud_as_one_liar} (power at the
+bound: $0.895$ for one liar, $0.99$--$1.00$ for a coalition, $0.896$ at $k=N-1$).
+
+
+\section{Reproducibility}
+\label{app:repro}
+
+Every number in this paper is read from \texttt{bench/results.json}, whose SHA-256
+is
+\begin{center}
+\texttt{334b9939d4e055a204715d048fc4ae4b}\\
+\texttt{c426ff40e3c65fd5b0bc5d4807a37683}
+\end{center}
+and which two independent full runs reproduce byte for byte. The two
+pre-registrations, written before their runs and never edited afterwards, are
+\texttt{bench/criteria.json} (\texttt{23dd1c85\ldots}) and
+\texttt{bench/criteria\_m2.json} (\texttt{c8cfbad1\ldots}); the run prints both
+hashes, and the report refuses to change them. The tables of this paper are
+generated from that JSON by \texttt{paper/make\_tables.py} and contain no typed
+numbers; \texttt{bench/REPORT.md} is regenerated deterministically from the same
+file.
+
+\begin{thebibliography}{9}
+
+\bibitem{kuramoto1975}
+Y.~Kuramoto,
+\newblock Self-entrainment of a population of coupled non-linear oscillators,
+\newblock in \emph{International Symposium on Mathematical Problems of
+Theoretical Physics}, Lecture Notes in Physics \textbf{39}, 420--422 (Springer,
+1975).
+
+\bibitem{lehmann2005}
+E.~L. Lehmann and J.~P. Romano,
+\newblock \emph{Testing Statistical Hypotheses}, 3rd ed.,
+\newblock Springer, New York, 2005.
+
+\bibitem{banach1922}
+S.~Banach,
+\newblock Sur les op\'erations dans les ensembles abstraits et leur application
+aux \'equations int\'egrales,
+\newblock \emph{Fundamenta Mathematicae} \textbf{3}, 133--181 (1922).
+
+\bibitem{neyman1933}
+J.~Neyman and E.~S. Pearson,
+\newblock On the problem of the most efficient tests of statistical hypotheses,
+\newblock \emph{Philosophical Transactions of the Royal Society A}
+\textbf{231}, 289--337 (1933).
+
+\bibitem{pvgis}
+T.~Huld, R.~M\"uller and A.~Gambardella,
+\newblock A new solar radiation database for estimating PV performance in Europe
+and Africa,
+\newblock \emph{Solar Energy} \textbf{86}, 1803--1815 (2012).
+\newblock PVGIS-5 traces for the site used here, retrieved 2026.
+
+\bibitem{nasa}
+NASA Langley Research Center,
+\newblock POWER Project Data Sets: meteorology and solar energy,
+\newblock \emph{NASA Prediction of Worldwide Energy Resources}, 2021 data,
+retrieved 2026.
+
+\end{thebibliography}
+
+\end{document}
+

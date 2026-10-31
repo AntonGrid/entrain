@@ -1,0 +1,29 @@
+\begin{table*}[t]
+\centering
+\caption{The chord and the per-node statistic, closed form (\texttt{theorem.predicted}); no Monte Carlo in this table. $c(S)=\|P_H\mathbf{1}_S\|=\sqrt{k(N-k)/N}$, so $c/c_1$ is the detectability of a known coalition relative to one liar; $\mathbb{E}t_i/b$ are the per-node means inside and outside the coalition; gain is $\max(k,N-k)/(N-1)$, the noncentrality of the largest $|t|$ relative to a single liar. ``flagged'' is the side the GLRT names. At $k=N$ every $t_i$ is identically zero: nothing is named, because there is no second side to compare against.}
+\label{tab:chord}
+\small
+\begin{tabular}{@{}r r r r r r r l@{}}
+\toprule
+$N$ & $k$ & $c/c_1$ & in & out & gain & $b_{\min}$ ratio & flagged \\
+\midrule
+10 & 1 & 1.000 & 0.949 & -0.105 & 1.000 & 1.000 & colluder \\
+10 & 2 & 1.333 & 0.843 & -0.211 & 0.889 & 1.125 & colluder \\
+10 & 3 & 1.528 & 0.738 & -0.316 & 0.778 & 1.286 & colluder \\
+10 & 5 & 1.667 & 0.527 & -0.527 & 0.556 & 1.800 & tie \\
+10 & 6 & 1.633 & 0.422 & -0.632 & 0.667 & 1.500 & honest \\
+10 & 8 & 1.333 & 0.211 & -0.843 & 0.889 & 1.125 & honest \\
+10 & 9 & 1.000 & 0.105 & -0.949 & 1.000 & 1.000 & honest \\
+10 & 10 & 0.000 & 0.000 & -1.054 & 0.000 & $\infty$ & none \\
+30 & 1 & 1.000 & 0.983 & -0.034 & 1.000 & 1.000 & colluder \\
+30 & 2 & 1.390 & 0.949 & -0.068 & 0.966 & 1.036 & colluder \\
+30 & 5 & 2.076 & 0.848 & -0.170 & 0.862 & 1.160 & colluder \\
+30 & 10 & 2.626 & 0.678 & -0.339 & 0.690 & 1.450 & colluder \\
+30 & 15 & 2.785 & 0.509 & -0.509 & 0.517 & 1.933 & tie \\
+30 & 20 & 2.626 & 0.339 & -0.678 & 0.690 & 1.450 & honest \\
+30 & 25 & 2.076 & 0.170 & -0.848 & 0.862 & 1.160 & honest \\
+30 & 29 & 1.000 & 0.034 & -0.983 & 1.000 & 1.000 & honest \\
+30 & 30 & 0.000 & 0.000 & -1.017 & 0.000 & $\infty$ & none \\
+\bottomrule
+\end{tabular}
+\end{table*}
