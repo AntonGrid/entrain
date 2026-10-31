@@ -7,3 +7,18 @@
 *.jl.*.cov
 *.jl.mem
 
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+*.log
+
+# Артефакты прогона НЕ игнорируются намеренно: они и есть результат.
+# bench/results.json, bench/REPORT.md, bench/roc.png, bench/data/ — под контролем версий.
+

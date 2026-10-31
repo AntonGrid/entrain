@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "entrain-infer"
+version = "0.1.0"
+description = "Entrain M1: GLRT detector, declared risk alpha, minimum detectable frequency lie"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+plot = ["matplotlib>=3.7"]
+
+[tool.setuptools.packages.find]
+include = ["entrain_infer", "entrain_infer.*"]
+exclude = ["tests", "tests.*", "bench", "bench.*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

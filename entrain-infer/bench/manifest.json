@@ -1,0 +1,49 @@
+{
+  "note": "sha256 of every background the bench reads; regenerate with fetch.py",
+  "generated_utc": "2026-10-30T19:55:32Z",
+  "sources": {
+    "nasa_power_2021": {
+      "filename": "nasa_power_2021_vladimir.json",
+      "family": "NASA POWER (NASA Langley) -- open, no key",
+      "description": "Hourly all-sky shortwave irradiance ALLSKY_SFC_SW_DWN, W/m^2",
+      "place": "56.13 N, 40.40 E (Vladimir region)",
+      "period": "2021-01-01 .. 2021-12-31",
+      "expected_samples": 8760,
+      "url": "https://power.larc.nasa.gov/api/temporal/hourly/point",
+      "query": {
+        "parameters": "ALLSKY_SFC_SW_DWN",
+        "community": "RE",
+        "longitude": "40.40",
+        "latitude": "56.13",
+        "start": "20210101",
+        "end": "20211231",
+        "format": "JSON"
+      },
+      "path": "bench/data/nasa_power_2021_vladimir.json",
+      "bytes": 159871,
+      "sha256": "d9a1525ac008e285b383a770cc931610deaf250adc8ebddafb3a8a6f02c30f7a",
+      "fetched_utc": "2026-10-30T19:55:32Z"
+    },
+    "pvgis_2020": {
+      "filename": "pvgis_2020_vladimir.json",
+      "family": "PVGIS (European Commission JRC) -- open, no key",
+      "description": "Hourly global irradiance on the plane G(i), W/m^2",
+      "place": "56.13 N, 40.40 E (Vladimir region)",
+      "period": "2020-01-01 .. 2020-12-31",
+      "expected_samples": 8784,
+      "url": "https://re.jrc.ec.europa.eu/api/v5_2/seriescalc",
+      "query": {
+        "lat": "56.13",
+        "lon": "40.40",
+        "startyear": "2020",
+        "endyear": "2020",
+        "horirrad": "1",
+        "outputformat": "json"
+      },
+      "path": "bench/data/pvgis_2020_vladimir.json",
+      "bytes": 744591,
+      "sha256": "d264521f1f2831802fbebb72e47fb681d66ec38b173610c8014e2c50e85228fa",
+      "fetched_utc": "2026-10-30T19:55:32Z"
+    }
+  }
+}
